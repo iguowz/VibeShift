@@ -1,0 +1,42 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      TZ: "Asia/Shanghai"
+      VIBESHIFT_CORS_ORIGINS: '["http://localhost:5173"]'
+      VIBESHIFT_SEARXNG_URL: "http://searxng:8080"
+      # 默认使用 baidu + github；如需扩展，可改成 "baidu,github,bing" 等组合
+      VIBESHIFT_SEARXNG_ENGINES: "baidu,github"
+    volumes:
+      - ./backend/app:/app/app:rw
+    depends_on:
+      - searxng
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      TZ: "Asia/Shanghai"
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+  searxng:
+    image: searxng/searxng:latest
+    ports:
+      - "8081:8080"
+    environment:
+      TZ: "Asia/Shanghai"
+      SEARXNG_BASE_URL: "http://localhost:8081/"
+      SEARXNG_SECRET_KEY: "vibeshift-dev-only-change-me"
+      FORCE_OWNERSHIP: "true"
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:rw
+      - searxng-data:/var/cache/searxng
+
+volumes:
+  searxng-data:

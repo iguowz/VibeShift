@@ -1,0 +1,358 @@
+<script setup lang="ts">
+import { computed, ref, watch } from "vue";
+
+import { renderRichTextToHtml, stripLeadingRichTitle } from "../lib/markdown";
+import { buildDiscoverShareText, exportDiscoverResultPdf, type ShareTarget } from "../lib/shareFormats";
+import { getDiscoverReportPresentation } from "../lib/stylePresentation";
+import type { DiscoverResponse, DiscoverResumeStage, SearchSource, StyleSkillProfile } from "../types";
+
+const props = defineProps<{
+  result: DiscoverResponse;
+  busy?: boolean;
+  styleProfile?: StyleSkillProfile | null;
+}>();
+const emit = defineEmits<{
+  rerun: [stage: DiscoverResumeStage];
+}>();
+
+const copyNotice = ref("");
+const activeTab = ref<"brief" | "report">("brief");
+const shareMenuRef = ref<HTMLDetailsElement | null>(null);
+const layoutLabelMap: Record<string, string> = {
+  auto: "自动版式",
+  newspaper: "报纸版",
+  poster: "海报版",
+  book: "书籍版",
+  classical: "书卷版",
+  ppt: "PPT 版",
+  paper: "论文版",
+  poetry: "诗歌版",
+};
+const visualLabelMap: Record<string, string> = {
+  auto: "自动可视化",
+  enhanced: "增强可视化",
+  minimal: "少量图表",
+  none: "纯正文",
+};
+
+const brief = computed(() => props.result.brief);
+const artifactLabels = computed(() => new Set((props.result.run?.artifacts || []).map((item) => item.label)));
+const canResumeFromDraft = computed(() => artifactLabels.value.has("discover-draft"));
+const canResumeFromBrief = computed(() => artifactLabels.value.has("discover-brief"));
+const canResumeFromSources = computed(() => artifactLabels.value.has("sources-data"));
+const normalizedReportText = computed(() => stripLeadingRichTitle(props.result.transformed_text));
+const reportHtml = computed(() => renderRichTextToHtml(normalizedReportText.value));
+const showLongContentHint = computed(() => props.result.transformed_text.length >= 9000);
+const topSources = computed(() =>
+  props.result.sources
+    .slice()
+    .sort((left, right) => (right.overall_score || 0) - (left.overall_score || 0))
+    .slice(0, 6),
+);
+const reportSummary = computed(() => brief.value.conclusion || brief.value.summary || props.result.title);
+const reportPresentation = computed(() => getDiscoverReportPresentation(props.styleProfile));
+const layoutClass = computed(() => {
+  const layout = props.styleProfile?.layout_format || "auto";
+  return layout === "auto" ? "" : `layout-format-${layout}`;
+});
+const styleMetaPills = computed(() => {
+  const pills: string[] = [];
+  if (props.styleProfile?.name) pills.push(`风格：${props.styleProfile.name}`);
+  if (props.styleProfile?.layout_format && props.styleProfile.layout_format !== "auto") {
+    pills.push(layoutLabelMap[props.styleProfile.layout_format] || "自动版式");
+  }
+  if (props.styleProfile?.visual_mode && props.styleProfile.visual_mode !== "auto") {
+    pills.push(visualLabelMap[props.styleProfile.visual_mode] || "自动可视化");
+  }
+  return pills;
+});
+
+watch(
+  () => props.result.request_id,
+  () => {
+    activeTab.value = "brief";
+  },
+  { immediate: true },
+);
+
+const sourcesMarkdown = computed(() => {
+  return props.result.sources
+    .map((item) => `- [${item.id}] ${item.title} - ${item.url}`)
+    .join("\n");
+});
+
+function sourceTypeLabel(source: SearchSource) {
+  const sourceType = source.source_type || "article";
+  return (
+    {
+      wiki: "百科",
+      qa: "问答",
+      social: "社区笔记",
+      book: "公开图书",
+      paper: "论文",
+      official: "官方资料",
+      code: "代码仓库",
+      news: "媒体报道",
+      article: "公开文章",
+    }[sourceType] || "公开资料"
+  );
+}
+
+function closeShareMenu() {
+  if (shareMenuRef.value) {
+    shareMenuRef.value.open = false;
+  }
+}
+
+async function copyAll() {
+  const text = [
+    props.result.transformed_text,
+    "",
+    "## 研究简报",
+    `- 摘要：${brief.value.summary}`,
+    `- 结论：${brief.value.conclusion}`,
+    "",
+    "## 参考链接",
+    sourcesMarkdown.value,
+    "",
+  ].join("\n");
+  await navigator.clipboard.writeText(text);
+  copyNotice.value = "已复制";
+  window.setTimeout(() => (copyNotice.value = ""), 1600);
+}
+
+async function copyForTarget(target: ShareTarget) {
+  const text = buildDiscoverShareText(props.result, target);
+  await navigator.clipboard.writeText(text);
+  closeShareMenu();
+  copyNotice.value = `已复制${target === "xiaohongshu" ? "小红书" : target === "moments" ? "朋友圈" : target === "wechat" ? "公众号" : "知乎"}格式`;
+  window.setTimeout(() => (copyNotice.value = ""), 1800);
+}
+
+function exportPdf() {
+  closeShareMenu();
+  try {
+    exportDiscoverResultPdf(props.result);
+    copyNotice.value = "已打开导出页，请在新页面点击“打印 / 另存为 PDF”";
+  } catch (error) {
+    copyNotice.value = error instanceof Error ? error.message : "导出 PDF 失败，请稍后重试";
+  }
+  window.setTimeout(() => (copyNotice.value = ""), 1800);
+}
+</script>
+
+<template>
+  <section :class="['result-shell', layoutClass]">
+    <div class="result-actions">
+      <button class="secondary-button" type="button" @click="copyAll">复制结果</button>
+      <details ref="shareMenuRef" class="copy-more">
+        <summary class="ghost-button">复制分享格式</summary>
+        <div class="copy-more-menu">
+          <button class="ghost-button" type="button" @click="copyForTarget('xiaohongshu')">小红书</button>
+          <button class="ghost-button" type="button" @click="copyForTarget('moments')">朋友圈</button>
+          <button class="ghost-button" type="button" @click="copyForTarget('wechat')">公众号</button>
+          <button class="ghost-button" type="button" @click="copyForTarget('zhihu')">知乎</button>
+        </div>
+      </details>
+      <button class="ghost-button" type="button" @click="exportPdf">导出 PDF</button>
+      <button
+        v-if="props.result.run?.id && canResumeFromDraft"
+        class="secondary-button"
+        type="button"
+        :disabled="props.busy"
+        @click="emit('rerun', 'draft')"
+      >
+        基于草稿重写成稿
+      </button>
+      <button
+        v-if="props.result.run?.id && canResumeFromBrief"
+        class="ghost-button"
+        type="button"
+        :disabled="props.busy"
+        @click="emit('rerun', 'brief')"
+      >
+        基于简报重跑
+      </button>
+      <button
+        v-if="props.result.run?.id && canResumeFromSources"
+        class="ghost-button"
+        type="button"
+        :disabled="props.busy"
+        @click="emit('rerun', 'sources')"
+      >
+        从来源重新研究
+      </button>
+      <span v-if="copyNotice" class="hint">{{ copyNotice }}</span>
+    </div>
+
+    <section class="discover-summary-board">
+      <article class="discover-highlight-card">
+        <span class="section-kicker">这次最值得先看</span>
+        <h2>{{ brief.conclusion || props.result.title }}</h2>
+        <p>{{ brief.summary || "本轮已根据公开来源整理出研究结论与支撑证据。" }}</p>
+        <div v-if="styleMetaPills.length" class="pinned-run-points">
+          <span v-for="item in styleMetaPills" :key="item" class="workflow-pill">{{ item }}</span>
+        </div>
+      </article>
+
+      <div class="discover-summary-metrics">
+        <article class="discover-metric-card">
+          <strong>{{ props.result.meta.sources }}</strong>
+          <span>可用来源</span>
+        </article>
+        <article class="discover-metric-card">
+          <strong>{{ props.result.meta.evidence_items }}</strong>
+          <span>关键证据</span>
+        </article>
+        <article class="discover-metric-card">
+          <strong>{{ props.result.meta.uncertainties }}</strong>
+          <span>待确认点</span>
+        </article>
+      </div>
+    </section>
+
+    <div class="result-tab-row">
+      <button
+        :class="['result-tab', { active: activeTab === 'brief' }]"
+        type="button"
+        @click="activeTab = 'brief'"
+      >
+        简报
+      </button>
+      <button
+        :class="['result-tab', { active: activeTab === 'report' }]"
+        type="button"
+        @click="activeTab = 'report'"
+      >
+        调研全文
+      </button>
+    </div>
+
+    <section v-if="activeTab === 'brief'" class="discover-brief-panel">
+      <div class="discover-brief-head">
+        <div>
+          <h3>研究简报</h3>
+          <p>先看结论、关键发现和最可信的来源，再决定是否深入阅读全文。</p>
+        </div>
+        <span class="workflow-pill">证据优先</span>
+      </div>
+
+      <div class="discover-brief-grid">
+        <article class="discover-brief-card">
+          <h4>直接结论</h4>
+          <p>{{ brief.conclusion || "暂无结论" }}</p>
+        </article>
+
+        <article class="discover-brief-card">
+          <h4>关键发现</h4>
+          <ul v-if="brief.key_findings.length" class="discover-list">
+            <li v-for="item in brief.key_findings" :key="item">{{ item }}</li>
+          </ul>
+          <p v-else class="hint">暂无结构化发现。</p>
+        </article>
+      </div>
+
+      <div class="discover-brief-grid">
+        <details class="discover-brief-card" open>
+          <summary class="sources-summary">关键证据（{{ brief.evidence.length }}）</summary>
+          <div class="evidence-list">
+            <article v-for="item in brief.evidence" :key="`${item.source_id}-${item.url}`" class="evidence-card">
+              <div class="evidence-head">
+                <strong>[{{ item.source_id }}] {{ item.title }}</strong>
+                <a :href="item.url" target="_blank" rel="noreferrer">打开来源</a>
+              </div>
+              <p v-if="item.quote" class="evidence-quote">“{{ item.quote }}”</p>
+              <p>{{ item.evidence }}</p>
+              <p v-if="item.relevance" class="hint">为什么重要：{{ item.relevance }}</p>
+            </article>
+          </div>
+        </details>
+
+        <article class="discover-brief-card">
+          <h4>优先查看的来源</h4>
+          <ol class="sources-list compact">
+            <li v-for="item in topSources" :key="item.url">
+              <a :href="item.url" target="_blank" rel="noreferrer">{{ item.title }}</a>
+              <div class="hint">
+                {{ sourceTypeLabel(item) }} · 可信度 {{ (item.credibility_score || 0).toFixed(1) }} / 10 · 相关度
+                {{ (item.relevance_score || 0).toFixed(1) }}
+                <span v-if="item.capture_mode === 'snippet'"> · 仅搜索摘要</span>
+              </div>
+            </li>
+          </ol>
+        </article>
+      </div>
+
+      <div class="discover-brief-grid">
+        <details class="discover-brief-card">
+          <summary class="sources-summary">待确认问题（{{ brief.uncertainties.length }}）</summary>
+          <ul v-if="brief.uncertainties.length" class="discover-list">
+            <li v-for="item in brief.uncertainties" :key="item">{{ item }}</li>
+          </ul>
+          <p v-else class="hint">暂无明显待确认问题。</p>
+        </details>
+
+        <details class="discover-brief-card">
+          <summary class="sources-summary">转写提纲（{{ brief.draft_outline.length }}）</summary>
+          <ol v-if="brief.draft_outline.length" class="discover-list">
+            <li v-for="item in brief.draft_outline" :key="item">{{ item }}</li>
+          </ol>
+          <p v-else class="hint">暂无转写提纲。</p>
+        </details>
+      </div>
+    </section>
+
+    <section v-else class="discover-report-panel">
+      <div class="discover-brief-head">
+        <div>
+          <h3>调研全文</h3>
+          <p>{{ reportPresentation.helper }}</p>
+        </div>
+      </div>
+
+      <div v-if="showLongContentHint" class="state-card">
+        <strong>内容较长</strong>
+        <p>首屏优先展示简报与高分来源；下方全文已启用稳定渲染，如需二次编辑可直接复制结果继续处理。</p>
+      </div>
+
+      <div class="discover-report-focus">
+        <article class="discover-brief-card report-focus-card">
+          <h4>{{ reportPresentation.heading }}</h4>
+          <p>{{ reportSummary }}</p>
+        </article>
+        <article class="discover-brief-card report-focus-card">
+          <h4>{{ reportPresentation.sourceHeading }}</h4>
+          <ol class="sources-list compact">
+            <li v-for="item in topSources.slice(0, 3)" :key="`report-${item.url}`">
+              <a :href="item.url" target="_blank" rel="noreferrer">{{ item.title }}</a>
+              <div class="hint">
+                {{ sourceTypeLabel(item) }} · 综合分 {{ (item.overall_score || 0).toFixed(1) }}
+                <span v-if="item.capture_mode === 'snippet'"> · 仅搜索摘要</span>
+              </div>
+            </li>
+          </ol>
+        </article>
+      </div>
+
+      <article class="result-text discover-report-body">
+        <div class="markdown" v-html="reportHtml" />
+      </article>
+    </section>
+
+    <details class="sources-panel">
+      <summary class="sources-summary">全部参考来源（{{ props.result.sources.length }}）</summary>
+      <ol class="sources-list">
+        <li v-for="item in props.result.sources" :key="item.url">
+          <a :href="item.url" target="_blank" rel="noreferrer">{{ item.title }}</a>
+          <div class="hint">
+            {{ sourceTypeLabel(item) }} · 可信度 {{ (item.credibility_score || 0).toFixed(1) }} / 10 · 相关度
+            {{ (item.relevance_score || 0).toFixed(1) }}
+            <span v-if="item.overall_score != null"> · 综合分 {{ item.overall_score.toFixed(1) }}</span>
+            <span v-if="item.capture_mode === 'snippet'"> · 仅搜索摘要</span>
+          </div>
+          <div v-if="item.snippet" class="hint">{{ item.snippet }}</div>
+        </li>
+      </ol>
+    </details>
+  </section>
+</template>

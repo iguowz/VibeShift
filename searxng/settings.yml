@@ -1,0 +1,47 @@
+use_default_settings: true
+
+general:
+  instance_name: "VibeShift Search"
+
+outgoing:
+  request_timeout: 10.0
+  max_request_timeout: 20.0
+
+server:
+  secret_key: "vibeshift-dev-only-change-me"
+  bind_address: "0.0.0.0"
+  port: 8080
+  base_url: "http://localhost:8081/"
+
+search:
+  safe_search: 0
+  formats:
+    - html
+    - json
+
+ui:
+  infinite_scroll: false
+
+# 默认设置收敛到 baidu + github，兼顾中文网页与代码/技术资料搜索。
+# 如需扩展搜索源，再按实际网络环境逐个开启。
+engines:
+  - name: baidu
+    disabled: false
+  - name: github
+    disabled: false
+  - name: baidu kaifa
+    disabled: true
+  - name: baidu images
+    disabled: true
+  - name: bing
+    disabled: true
+  - name: wikipedia
+    disabled: true
+  - name: google
+    disabled: true
+  - name: duckduckgo
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: brave
+    disabled: true
