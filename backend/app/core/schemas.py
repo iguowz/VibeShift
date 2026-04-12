@@ -462,5 +462,57 @@ class StylePromptOptimizeResponse(BaseModel):
     profile_suggestion: StyleProfileSuggestion | None = None
 
 
+class StyleRecommendCandidate(BaseModel):
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    prompt: str = ""
+    audience: str = ""
+    tone: str = ""
+    structure_template: str = ""
+    emphasis_points: list[str] = Field(default_factory=list)
+    layout_format: StyleLayoutFormat = StyleLayoutFormat.AUTO
+    visual_mode: StyleVisualMode = StyleVisualMode.AUTO
+
+
+class StyleRecommendRequest(BaseModel):
+    input_text: str = Field(min_length=1)
+    target: StylePromptTarget = StylePromptTarget.REWRITE
+    llm: LLMConfig
+    styles: list[StyleRecommendCandidate] = Field(default_factory=list)
+    top_k: int = Field(default=3, ge=1, le=5)
+
+
+class StyleRecommendMatch(BaseModel):
+    style_id: str = Field(min_length=1)
+    reason: str = ""
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class StyleRecommendResponse(BaseModel):
+    style_id: str | None = None
+    reason: str = ""
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    candidates: list[StyleRecommendMatch] = Field(default_factory=list)
+
+
+class StylePreviewRequest(BaseModel):
+    input_text: str = Field(min_length=1)
+    target: StylePromptTarget = StylePromptTarget.REWRITE
+    llm: LLMConfig
+    styles: list[StyleRecommendCandidate] = Field(default_factory=list)
+    style_ids: list[str] = Field(default_factory=list)
+    max_items: int = Field(default=3, ge=1, le=4)
+
+
+class StylePreviewItem(BaseModel):
+    style_id: str = Field(min_length=1)
+    preview_text: str = ""
+    focus_points: list[str] = Field(default_factory=list)
+
+
+class StylePreviewResponse(BaseModel):
+    previews: list[StylePreviewItem] = Field(default_factory=list)
+
+
 TransformResponse.model_rebuild()
 DiscoverResponse.model_rebuild()

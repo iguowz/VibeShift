@@ -75,7 +75,7 @@ class CostEstimatorService:
 
         if len(chunks) == 1:
             rewrite_calls = 1
-            messages = build_rewrite_messages(source, style_prompt)
+            messages = build_rewrite_messages(source, style_prompt, style_profile=payload.style_profile)
             prompt_tokens += estimate_messages_tokens(messages)
         else:
             rewrite_calls = len(chunks)
@@ -88,10 +88,16 @@ class CostEstimatorService:
                     chunk_content=chunk.content,
                     chunk_index=chunk.index,
                     total_chunks=total_chunks,
+                    style_profile=payload.style_profile,
                 )
                 prompt_tokens += estimate_messages_tokens(chunk_messages)
 
-            merge_messages = build_merge_messages(source, style_prompt, ["(chunk result)"] * total_chunks)
+            merge_messages = build_merge_messages(
+                source,
+                style_prompt,
+                ["(chunk result)"] * total_chunks,
+                style_profile=payload.style_profile,
+            )
             prompt_tokens += estimate_messages_tokens(merge_messages)
 
         completion_tokens_max = payload.llm.max_tokens * (rewrite_calls + merge_calls)

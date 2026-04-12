@@ -119,19 +119,40 @@ describe("DiscoverViewer", () => {
       props: {
         result: buildResult(),
         busy: false,
+        styleProfile: {
+          name: "商业简报",
+          audience: "管理层",
+          tone: "冷静、结论先行",
+          structure_template: "一句话结论 -> 关键数据 -> 核心判断 -> 风险与建议",
+          emphasis_points: ["关键数据", "风险提示"],
+          citation_policy: "minimal",
+          title_policy: "retain",
+          image_focus: "diagram",
+          layout_format: "ppt",
+          visual_mode: "enhanced",
+        },
       },
     });
 
     expect(wrapper.text()).toContain("简报");
-    expect(wrapper.text()).toContain("研究简报");
-    expect(wrapper.text()).toContain("直接结论");
+    expect(wrapper.text()).toContain("已为你整理成可直接发送的 公众号长文");
+    expect(wrapper.text()).toContain("可直接发送版");
+    expect(wrapper.text()).toContain("一句话结论");
     expect(wrapper.text()).toContain("FastAPI 更适合追求开发效率");
-    expect(wrapper.text()).toContain("关键证据（1）");
+    expect(wrapper.text()).toContain("备用支撑材料");
+    expect(wrapper.text()).toContain("数据与依据（1）");
     expect(wrapper.text()).toContain("FastAPI docs emphasize async support");
     expect(wrapper.text()).toContain("缺少特定业务下的压测数据");
+    expect(wrapper.text()).toContain("重点 1");
+    expect(wrapper.text()).not.toContain("报告形式");
+    expect(wrapper.text()).not.toContain("生成流程");
+    expect(wrapper.text()).not.toContain("输出重点");
+    expect(wrapper.text().indexOf("风险与待确认点（1）")).toBeLessThan(wrapper.text().indexOf("数据与依据（1）"));
+    const preview = wrapper.get(".discover-deliverable-card .markdown");
+    expect(preview.text()).toContain("FastAPI 更适合追求开发效率");
   });
 
-  it("copies report with research brief summary", async () => {
+  it("copies current brief as direct-use content", async () => {
     (navigator.clipboard.writeText as any).mockClear?.();
     const wrapper = mount(DiscoverViewer, {
       props: {
@@ -140,15 +161,17 @@ describe("DiscoverViewer", () => {
       },
     });
 
-    const button = wrapper.findAll("button").find((item) => item.text().includes("复制结果"));
+    const button = wrapper.findAll("button").find((item) => item.text().includes("复制公众号长文"));
     expect(button).toBeTruthy();
     await button!.trigger("click");
 
     expect(vi.isMockFunction(navigator.clipboard.writeText)).toBe(true);
     expect(navigator.clipboard.writeText).toHaveBeenCalled();
     const payload = (navigator.clipboard.writeText as any).mock.calls[0][0] as string;
-    expect(payload).toContain("## 研究简报");
+    expect(payload).toContain("# FastAPI 最佳实践");
     expect(payload).toContain("FastAPI 更适合追求开发效率");
+    expect(payload).not.toContain("研究简报");
+    expect(payload).not.toContain("参考链接");
   });
 
   it("emits rerun events for resume stages", async () => {
@@ -218,13 +241,53 @@ describe("DiscoverViewer", () => {
     });
 
     expect(wrapper.text()).toContain("研究简报");
-    const reportTab = wrapper.findAll("button").find((item) => item.text().includes("调研全文"));
+    expect(wrapper.text()).toContain("复制公众号长文");
+    expect(wrapper.text()).toContain("更多场景成稿（简报）");
+    const reportTab = wrapper.findAll("button").find((item) => item.text().includes("详文"));
     expect(reportTab).toBeTruthy();
     await reportTab!.trigger("click");
 
-    expect(wrapper.text()).toContain("调研全文");
+    expect(wrapper.text()).toContain("详文");
+    expect(wrapper.text()).toContain("复制详文成稿");
+    expect(wrapper.text()).toContain("更多场景成稿（详文）");
+    expect(wrapper.text()).toContain("这篇详文可直接使用");
+    expect(wrapper.text()).toContain("内容分段");
     expect(wrapper.text()).not.toContain("Markdown 源码");
     expect(wrapper.text()).not.toContain("HTML 源码");
+  });
+
+  it("renders family-specific longform guide in report tab", async () => {
+    const result = buildResult();
+    result.transformed_text =
+      "# 黑洞是什么\n\n先用一句话讲清：黑洞是引力极强的天体区域。\n\n## 为什么会形成\n\n- 来自恒星坍缩\n- 会形成极端引力\n\n## 常见误区\n\n- 不是宇宙吸尘器\n- 不会无差别吞掉一切\n\n最后记住：它首先是引力现象。";
+
+    const wrapper = mount(DiscoverViewer, {
+      props: {
+        result,
+        busy: false,
+        styleProfile: {
+          name: "科普风",
+          audience: "普通读者",
+          tone: "清楚、友好",
+          structure_template: "一句话讲清 -> 原理解释 -> 误区提醒 -> 现实意义",
+          emphasis_points: ["常见误区"],
+          citation_policy: "minimal",
+          title_policy: "retain",
+          image_focus: "diagram",
+          layout_format: "auto",
+          visual_mode: "minimal",
+        },
+      },
+    });
+
+    const reportTab = wrapper.findAll("button").find((item) => item.text().includes("详文"));
+    expect(reportTab).toBeTruthy();
+    await reportTab!.trigger("click");
+
+    expect(wrapper.text()).toContain("先讲明白");
+    expect(wrapper.text()).toContain("理解抓手");
+    expect(wrapper.text()).toContain("最后记住");
+    expect(wrapper.find(".deliverable-guide-closing").exists()).toBe(true);
   });
 
   it("copies xiaohongshu share text, closes share menu and exports pdf", async () => {
@@ -240,21 +303,45 @@ describe("DiscoverViewer", () => {
 
     const details = wrapper.find("details.copy-more");
     (details.element as HTMLDetailsElement).open = true;
-    const xhsButton = wrapper.findAll("button").find((item) => item.text().includes("小红书"));
+    const xhsButton = details.findAll("button").find((item) => item.text().includes("小红书笔记"));
     expect(xhsButton).toBeTruthy();
     await xhsButton!.trigger("click");
 
     expect(navigator.clipboard.writeText).toHaveBeenCalled();
+    expect(wrapper.text()).toContain("适合重点前置、节奏更快的图文发布");
     const payload = (navigator.clipboard.writeText as any).mock.calls.at(-1)?.[0] as string;
-    expect(payload).toContain("# FastAPI 最佳实践");
-    expect(payload).toContain("#调研");
+    expect(payload).toContain("【FastAPI 最佳实践】");
+    expect(payload).toContain("FastAPI 更适合追求开发效率");
+    expect(payload).not.toContain("#调研");
+    expect(payload).not.toContain("## 结论 / TL;DR");
     expect((details.element as HTMLDetailsElement).open).toBe(false);
 
     const pdfButton = wrapper.findAll("button").find((item) => item.text().includes("导出 PDF"));
     expect(pdfButton).toBeTruthy();
     await pdfButton!.trigger("click");
-    expect(shareFormats.exportDiscoverResultPdf).toHaveBeenCalled();
+    expect(shareFormats.exportDiscoverResultPdf).toHaveBeenCalledWith(expect.any(Object), undefined, "brief");
     expect(wrapper.text()).not.toContain("支持渲染 Markdown 或 HTML");
+  });
+
+  it("exports report tab as report content when switched", async () => {
+    vi.mocked(shareFormats.exportDiscoverResultPdf).mockClear();
+
+    const wrapper = mount(DiscoverViewer, {
+      props: {
+        result: buildResult(),
+        busy: false,
+      },
+    });
+
+    const reportTab = wrapper.findAll("button").find((item) => item.text().includes("详文"));
+    expect(reportTab).toBeTruthy();
+    await reportTab!.trigger("click");
+
+    const pdfButton = wrapper.findAll("button").find((item) => item.text().includes("导出 PDF"));
+    expect(pdfButton).toBeTruthy();
+    await pdfButton!.trigger("click");
+
+    expect(shareFormats.exportDiscoverResultPdf).toHaveBeenCalledWith(expect.any(Object), undefined, "report");
   });
 
   it("removes duplicated leading report title in preview", async () => {
@@ -268,7 +355,7 @@ describe("DiscoverViewer", () => {
       },
     });
 
-    const reportTab = wrapper.findAll("button").find((item) => item.text().includes("调研全文"));
+    const reportTab = wrapper.findAll("button").find((item) => item.text().includes("详文"));
     expect(reportTab).toBeTruthy();
     await reportTab!.trigger("click");
 
@@ -289,7 +376,7 @@ describe("DiscoverViewer", () => {
       },
     });
 
-    const reportTab = wrapper.findAll("button").find((item) => item.text().includes("调研全文"));
+    const reportTab = wrapper.findAll("button").find((item) => item.text().includes("详文"));
     expect(reportTab).toBeTruthy();
     await reportTab!.trigger("click");
 
@@ -298,5 +385,105 @@ describe("DiscoverViewer", () => {
     expect(markdown.text()).toContain("研究步骤");
     expect(markdown.text()).toContain("厘清对象");
     expect(markdown.text()).not.toContain('<article class="pretext-flow-step">');
+  });
+
+  it("renders interview-style report body as dialogue blocks", async () => {
+    const result = buildResult();
+    result.transformed_text =
+      "## 引题\n\n问：为什么选 FastAPI？\n答：因为开发效率高。\n\n问：风险是什么？\n答：团队需要熟悉类型提示。";
+
+    const wrapper = mount(DiscoverViewer, {
+      props: {
+        result,
+        busy: false,
+        styleProfile: {
+          name: "访谈问答",
+          audience: "产品经理",
+          tone: "自然、清楚",
+          structure_template: "引题 -> 问题 -> 回答 -> 追问 -> 小结",
+          emphasis_points: ["关键问答"],
+          citation_policy: "minimal",
+          title_policy: "retain",
+          image_focus: "narrative",
+          layout_format: "book",
+          visual_mode: "minimal",
+        },
+      },
+    });
+
+    const reportTab = wrapper.findAll("button").find((item) => item.text().includes("详文"));
+    expect(reportTab).toBeTruthy();
+    await reportTab!.trigger("click");
+
+    const markdown = wrapper.get(".discover-report-body .markdown");
+    expect(markdown.html()).toContain("dialogue-render-block");
+    expect(markdown.text()).toContain("为什么选 FastAPI");
+    expect(markdown.text()).toContain("因为开发效率高");
+  });
+
+  it("renders manual-style report body as step modules", async () => {
+    const result = buildResult();
+    result.transformed_text = "## 操作步骤\n\n1. 明确目标\n2. 配置参数\n3. 验证结果";
+
+    const wrapper = mount(DiscoverViewer, {
+      props: {
+        result,
+        busy: false,
+        styleProfile: {
+          name: "教程手册",
+          audience: "执行同学",
+          tone: "清楚、直接",
+          structure_template: "目标 -> 前置条件 -> 步骤 -> 排错 -> 完成标准",
+          emphasis_points: ["关键步骤"],
+          citation_policy: "minimal",
+          title_policy: "retain",
+          image_focus: "diagram",
+          layout_format: "auto",
+          visual_mode: "minimal",
+        },
+      },
+    });
+
+    const reportTab = wrapper.findAll("button").find((item) => item.text().includes("详文"));
+    expect(reportTab).toBeTruthy();
+    await reportTab!.trigger("click");
+
+    const markdown = wrapper.get(".discover-report-body .markdown");
+    expect(markdown.html()).toContain("body-step-module");
+    expect(markdown.text()).toContain("明确目标");
+    expect(markdown.text()).toContain("配置参数");
+  });
+
+  it("renders editorial-style report body as section modules", async () => {
+    const result = buildResult();
+    result.transformed_text = "## 核心判断\n\n这是第一段分析。\n\n## 事实依据\n\n这里是支撑判断的事实。";
+
+    const wrapper = mount(DiscoverViewer, {
+      props: {
+        result,
+        busy: false,
+        styleProfile: {
+          name: "评论社论",
+          audience: "管理层",
+          tone: "鲜明、克制",
+          structure_template: "观点 -> 事实依据 -> 分析推进 -> 结论与建议",
+          emphasis_points: ["核心判断"],
+          citation_policy: "minimal",
+          title_policy: "retain",
+          image_focus: "editorial",
+          layout_format: "newspaper",
+          visual_mode: "minimal",
+        },
+      },
+    });
+
+    const reportTab = wrapper.findAll("button").find((item) => item.text().includes("详文"));
+    expect(reportTab).toBeTruthy();
+    await reportTab!.trigger("click");
+
+    const markdown = wrapper.get(".discover-report-body .markdown");
+    expect(markdown.html()).toContain("body-section-module");
+    expect(markdown.html()).toContain("body-section-editorial");
+    expect(markdown.text()).toContain("事实依据");
   });
 });

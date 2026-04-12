@@ -231,7 +231,8 @@ describe("ResultViewer", () => {
       },
     });
 
-    expect(wrapper.text()).toContain("先看重点");
+    expect(wrapper.text()).toContain("这篇内容已整理成可直接使用的成稿");
+    expect(wrapper.text()).toContain("复制公众号长文");
     expect(wrapper.text()).not.toContain("任务轨迹");
     expect(wrapper.text()).not.toContain("Markdown 源码");
     expect(wrapper.text()).not.toContain("HTML 源码");
@@ -263,6 +264,44 @@ describe("ResultViewer", () => {
     expect(wrapper.text()).toContain("第一，要看长期影响。");
     expect(wrapper.text()).not.toContain("hostname: example.com");
     expect(wrapper.text()).not.toContain("url: https://example.com");
+  });
+
+  it("renders longform guide with family-specific closing cues", () => {
+    const result: TransformResponse = {
+      ...buildResult(),
+      transformed_text:
+        "# 评论稿\n\n先把判断讲清：这次更适合稳步推进。\n\n## 事实依据\n\n数据和反馈都支持这个判断。\n\n## 分析推进\n\n团队仍在磨合期。\n\n因此，先稳后快会更合理。",
+    };
+
+    const wrapper = mount(ResultViewer, {
+      props: {
+        result,
+        loading: false,
+        regeneratingImageId: null,
+        generatingImages: false,
+        imageProgress: null,
+        imagePlacement: "footer",
+        errorMessage: "",
+        errorSuggestion: "",
+        styleProfile: {
+          name: "评论风",
+          audience: "管理层",
+          tone: "鲜明、克制",
+          structure_template: "观点 -> 事实依据 -> 分析推进 -> 结论与建议",
+          emphasis_points: ["核心判断"],
+          citation_policy: "minimal",
+          title_policy: "retain",
+          image_focus: "editorial",
+          layout_format: "newspaper",
+          visual_mode: "minimal",
+        },
+      },
+    });
+
+    expect(wrapper.text()).toContain("导语判断");
+    expect(wrapper.text()).toContain("论证抓手");
+    expect(wrapper.text()).toContain("结尾落点");
+    expect(wrapper.find(".deliverable-guide-closing").exists()).toBe(true);
   });
 
   it("interleaves images when copying markdown", async () => {
@@ -304,7 +343,7 @@ describe("ResultViewer", () => {
     expect(idxImg2).toBeGreaterThan(idxP3);
   });
 
-  it("copies wechat share text, closes share menu and exports pdf", async () => {
+  it("copies recommended deliverable, closes share menu and exports pdf", async () => {
     (navigator.clipboard.writeText as any).mockClear?.();
     vi.mocked(shareFormats.exportTransformResultPdf).mockClear();
 
@@ -321,19 +360,24 @@ describe("ResultViewer", () => {
       },
     });
 
-    const menu = wrapper.find("details.copy-more");
-    (menu.element as HTMLDetailsElement).open = true;
-    const shareButton = wrapper.findAll("button").find((button) => button.text().includes("公众号格式"));
-    expect(shareButton).toBeTruthy();
-    await shareButton!.trigger("click");
+    const primaryButton = wrapper.findAll("button").find((button) => button.text().includes("复制公众号长文"));
+    expect(primaryButton).toBeTruthy();
+    await primaryButton!.trigger("click");
 
     const arg = (navigator.clipboard.writeText as any).mock.calls.at(-1)?.[0] as string;
     expect(arg).toContain("# 测试标题");
-    expect(arg).toContain("导语：摘要");
+    expect(arg).toContain("摘要");
+    expect(arg).not.toContain("导语：");
+
+    const menu = wrapper.find("details.copy-more");
+    (menu.element as HTMLDetailsElement).open = true;
+    const shareButton = menu.findAll("button").find((button) => button.text().includes("公众号长文"));
+    expect(shareButton).toBeTruthy();
+    await shareButton!.trigger("click");
     expect((menu.element as HTMLDetailsElement).open).toBe(false);
 
     (menu.element as HTMLDetailsElement).open = true;
-    const pdfButton = wrapper.findAll("button").find((button) => button.text().includes("导出 PDF"));
+    const pdfButton = wrapper.findAll("button").find((button) => button.text().includes("导出成稿 PDF"));
     expect(pdfButton).toBeTruthy();
     await pdfButton!.trigger("click");
     expect(shareFormats.exportTransformResultPdf).toHaveBeenCalled();
@@ -433,7 +477,87 @@ describe("ResultViewer", () => {
       },
     });
 
-    expect(wrapper.text()).toContain("先读这一段");
-    expect(wrapper.text()).not.toContain("建议优先看");
+    expect(wrapper.text()).toContain("这篇内容已整理成可直接使用的成稿");
+    expect(wrapper.text()).toContain("主按钮和 PDF 导出会直接使用更适合当前风格分发的公众号长文");
+  });
+
+  it("renders interview-like body as dialogue blocks", () => {
+    const result: TransformResponse = {
+      ...buildResult(),
+      transformed_text: "# 测试标题\n\n问：为什么选这个方案？\n答：因为上线更快。\n\n问：最大风险是什么？\n答：团队需要补齐经验。",
+    };
+
+    const wrapper = mount(ResultViewer, {
+      props: {
+        result,
+        loading: false,
+        regeneratingImageId: null,
+        generatingImages: false,
+        imageProgress: null,
+        imagePlacement: "footer",
+        errorMessage: "",
+        errorSuggestion: "",
+        styleProfile: {
+          name: "访谈问答",
+          audience: "产品经理",
+          tone: "自然、清楚",
+          structure_template: "引题 -> 问题 -> 回答 -> 追问 -> 小结",
+          emphasis_points: ["关键问答"],
+          citation_policy: "minimal",
+          title_policy: "retain",
+          image_focus: "narrative",
+          layout_format: "book",
+          visual_mode: "minimal",
+        },
+      },
+    });
+
+    expect(wrapper.html()).toContain("dialogue-render-block");
+    expect(wrapper.text()).toContain("关键问答");
+    expect(wrapper.text()).toContain("为什么选这个方案");
+    expect(wrapper.text()).toContain("因为上线更快");
+  });
+
+  it("keeps poster-style results focused on ready-to-use content", () => {
+    const wrapper = mount(ResultViewer, {
+      props: {
+        result: {
+          ...buildResult(),
+          transformed_text: "## 一句话结论\n\n- 优先选稳定方案\n- 风险先看数据安全\n- 预留迁移成本",
+        },
+        loading: false,
+        regeneratingImageId: null,
+        generatingImages: false,
+        imageProgress: null,
+        imagePlacement: "footer",
+        errorMessage: "",
+        errorSuggestion: "",
+        styleProfile: {
+          name: "海报风",
+          audience: "管理层",
+          tone: "醒目、直接",
+          structure_template: "大标题 -> 一句话结论 -> 重点卡片 -> 行动建议",
+          emphasis_points: ["关键数字", "行动建议"],
+          citation_policy: "minimal",
+          title_policy: "punchy",
+          image_focus: "editorial",
+          layout_format: "poster",
+          visual_mode: "enhanced",
+        },
+      },
+    });
+
+    expect(wrapper.text()).toContain("这篇内容已整理成可直接使用的成稿");
+    expect(wrapper.text()).toContain("风格：海报风");
+    expect(wrapper.text()).toContain("复制小红书成稿");
+    expect(wrapper.text()).toContain("主按钮成稿预览");
+    expect(wrapper.text()).toContain("小红书笔记");
+    expect(wrapper.text()).toContain("适合重点前置、节奏更快的图文发布");
+    expect(wrapper.text()).toContain("主按钮和 PDF 导出会直接使用更适合当前风格分发的小红书笔记");
+    expect(wrapper.text()).toContain("重点 1");
+    expect(wrapper.html()).toContain("body-card-module");
+    expect(wrapper.text()).not.toContain("展示形式");
+    expect(wrapper.text()).not.toContain("推荐流程");
+    expect(wrapper.text()).not.toContain("输出重点");
   });
 });

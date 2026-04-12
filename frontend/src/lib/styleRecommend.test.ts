@@ -1,4 +1,4 @@
-import { recommendStyle } from "./styleRecommend";
+import { recommendStyle, recommendStyleCandidates } from "./styleRecommend";
 import { createStyleTemplate } from "./styleSkill";
 
 describe("recommendStyle", () => {
@@ -58,6 +58,22 @@ describe("recommendStyle", () => {
       structure_template: "主张 -> 论点一二三 -> 反方回应 -> 结论收束",
       layout_format: "ppt",
       visual_mode: "minimal",
+    }),
+    createStyleTemplate({
+      id: "plain",
+      name: "通俗风",
+      prompt: "写得通俗易懂，先讲结论，再分点解释。",
+      structure_template: "先讲结论 -> 分点解释 -> 最后提醒",
+      layout_format: "auto",
+      visual_mode: "minimal",
+    }),
+    createStyleTemplate({
+      id: "snack",
+      name: "快餐风",
+      prompt: "写成速读重点版。",
+      structure_template: "一句话结论 -> 3~5 个重点 -> 行动建议",
+      layout_format: "poster",
+      visual_mode: "enhanced",
     }),
   ];
 
@@ -165,5 +181,46 @@ describe("recommendStyle", () => {
 
     expect(recommendation?.styleId).toBe("debate");
     expect(recommendation?.reason).toMatch(/辩论|攻防/);
+  });
+
+  it("prefers plain style for easy-to-understand requests", () => {
+    const recommendation = recommendStyle({
+      input: "把这段数据库原理讲人话一点，通俗易懂，别太复杂",
+      mode: "text",
+      styles,
+      recentRuns: [],
+      styleMemories: [],
+    });
+
+    expect(recommendation?.styleId).toBe("plain");
+    expect(recommendation?.reason).toMatch(/通俗|直白|易懂/);
+  });
+
+  it("prefers snack style for quick-scan content", () => {
+    const recommendation = recommendStyle({
+      input: "帮我做一个一分钟速读版，只保留重点速看和行动建议",
+      mode: "text",
+      styles,
+      recentRuns: [],
+      styleMemories: [],
+    });
+
+    expect(recommendation?.styleId).toBe("snack");
+    expect(recommendation?.reason).toMatch(/快扫|速读|重点/);
+  });
+
+  it("returns multiple ranked style candidates for preview compare", () => {
+    const recommendations = recommendStyleCandidates({
+      input: "帮我做一个适合管理层快速扫读的一页海报式简报，突出重点卡片、风险和行动建议",
+      mode: "text",
+      styles,
+      recentRuns: [],
+      styleMemories: [],
+    }, 3);
+
+    expect(recommendations.length).toBeGreaterThanOrEqual(2);
+    expect(recommendations[0]?.styleId).toBe("snack");
+    expect(recommendations[1]?.score).toBeLessThanOrEqual(recommendations[0]?.score ?? 0);
+    expect(recommendations.every((item) => item.reason.length > 0)).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import DiscoverViewer from "./components/DiscoverViewer.vue";
 import HistoryDrawer from "./components/HistoryDrawer.vue";
@@ -11,9 +11,10 @@ import SettingsDrawer from "./components/SettingsDrawer.vue";
 import TopBar from "./components/TopBar.vue";
 import ResultViewer from "./components/ResultViewer.vue";
 import { useTransform } from "./composables/useTransform";
-import { isRequestCanceled, resolveApiError, submitDiscover } from "./lib/api";
+import { isRequestCanceled, previewStylePrompt, recommendStylePrompt, resolveApiError, submitDiscover } from "./lib/api";
 import { buildFunctionSkills } from "./lib/functionSkills";
-import { recommendStyle } from "./lib/styleRecommend";
+import { buildStyleGuideCard, buildStylePreviewCards } from "./lib/stylePreview";
+import { recommendStyle, recommendStyleCandidates } from "./lib/styleRecommend";
 import { buildStyleProfile } from "./lib/styleSkill";
 import { usePreferencesStore } from "./stores/preferences";
 import { useRunMemoryStore } from "./stores/runMemory";
@@ -95,7 +96,7 @@ const inputHint = computed(() => {
   if (detectedMode.value === "discover") return "问题越具体，结论和来源会越稳。";
   return "支持长文本自动扩展输入框；正文模式可用 Ctrl/Cmd + Enter 开始。";
 });
-const autoStyleRecommendation = computed(() =>
+const heuristicStyleRecommendation = computed(() =>
   recommendStyle({
     input: inputValue.value,
     mode: detectedMode.value,
@@ -104,6 +105,84 @@ const autoStyleRecommendation = computed(() =>
     styleMemories: store.stylePromptMemories,
   }),
 );
+const heuristicStyleCandidates = computed(() =>
+  recommendStyleCandidates(
+    {
+      input: inputValue.value,
+      mode: detectedMode.value,
+      styles: store.styles,
+      recentRuns: runMemory.recentRuns,
+      styleMemories: store.stylePromptMemories,
+    },
+    4,
+  ),
+);
+const llmStyleRecommendation = ref<{ styleId: string; reason: string; score: number } | null>(null);
+const llmStyleCandidates = ref<Array<{ styleId: string; reason: string; score: number }>>([]);
+const stylePreviewItems = ref<Array<{ style_id: string; preview_text: string; focus_points: string[] }>>([]);
+const stylePanelsCollapsed = ref(false);
+const autoStyleRecommendation = computed(() => llmStyleRecommendation.value || heuristicStyleRecommendation.value);
+const recommendedStyleMeta = computed(() => {
+  const styleId = autoStyleRecommendation.value?.styleId;
+  if (!styleId) return null;
+  return store.styles.find((style) => style.id === styleId) || null;
+});
+const recommendedStyleGuide = computed(() => {
+  if (!store.autoStyleEnabled || manualStyleLocked.value || !recommendedStyleMeta.value || !autoStyleRecommendation.value) return null;
+  return buildStyleGuideCard({
+    mode: detectedMode.value,
+    style: recommendedStyleMeta.value,
+    reason: autoStyleRecommendation.value.reason,
+    score: autoStyleRecommendation.value.score,
+    source: llmStyleRecommendation.value?.styleId === recommendedStyleMeta.value.id ? "llm" : "heuristic",
+    preview: stylePreviewItems.value.find((item) => item.style_id === recommendedStyleMeta.value?.id) || null,
+  });
+});
+const showStyleAssistant = computed(() => !stylePanelsCollapsed.value);
+const manualSelectedStyleGuide = computed(() => {
+  if (!manualStyleLocked.value || !store.selectedStyle) return null;
+  return buildStyleGuideCard({
+    mode: detectedMode.value,
+    style: store.selectedStyle,
+    reason: "你已手动锁定这个风格，本次会按这一路数直接成稿。",
+    preview: stylePreviewItems.value.find((item) => item.style_id === store.selectedStyle?.id) || null,
+  });
+});
+const stylePreviewCandidates = computed(() => {
+  const candidates: Array<{ styleId: string; reason: string; score: number; source: "llm" | "heuristic" }> = [];
+  const pushCandidate = (styleId: string, reason: string, score: number, source: "llm" | "heuristic") => {
+    if (!styleId || candidates.some((item) => item.styleId === styleId)) return;
+    candidates.push({ styleId, reason, score, source });
+  };
+
+  if (llmStyleRecommendation.value?.styleId) {
+    pushCandidate(
+      llmStyleRecommendation.value.styleId,
+      llmStyleRecommendation.value.reason,
+      llmStyleRecommendation.value.score,
+      "llm",
+    );
+  }
+  for (const candidate of llmStyleCandidates.value) {
+    pushCandidate(candidate.styleId, candidate.reason, candidate.score, "llm");
+    if (candidates.length >= 4) break;
+  }
+  for (const candidate of heuristicStyleCandidates.value) {
+    pushCandidate(candidate.styleId, candidate.reason, candidate.score, "heuristic");
+    if (candidates.length >= 4) break;
+  }
+  return buildStylePreviewCards({
+    mode: detectedMode.value,
+    styles: store.styles,
+    candidates,
+    previews: stylePreviewItems.value,
+    limit: 4,
+  });
+});
+let autoStyleController: AbortController | null = null;
+let autoStyleTimer: number | null = null;
+let stylePreviewController: AbortController | null = null;
+let stylePreviewTimer: number | null = null;
 
 type StepperState = "idle" | "running" | "done" | "error";
 const stepperState = ref<StepperState>("idle");
@@ -116,6 +195,164 @@ function clearTimers() {
     const id = timers.pop();
     if (id != null) window.clearTimeout(id);
   }
+}
+
+function clearAutoStyleTimer() {
+  if (autoStyleTimer != null) {
+    window.clearTimeout(autoStyleTimer);
+    autoStyleTimer = null;
+  }
+}
+
+function clearStylePreviewTimer() {
+  if (stylePreviewTimer != null) {
+    window.clearTimeout(stylePreviewTimer);
+    stylePreviewTimer = null;
+  }
+}
+
+function styleTargetForMode(mode: DetectedMode) {
+  return mode === "discover" ? "discover" : "rewrite";
+}
+
+function stopAutoStyleRequest() {
+  clearAutoStyleTimer();
+  autoStyleController?.abort();
+  autoStyleController = null;
+}
+
+function stopStylePreviewRequest() {
+  clearStylePreviewTimer();
+  stylePreviewController?.abort();
+  stylePreviewController = null;
+}
+
+async function runLLMStyleRecommendation() {
+  stopAutoStyleRequest();
+  const cleanedInput = inputValue.value.trim();
+  if (!store.autoStyleEnabled || manualStyleLocked.value || !cleanedInput || cleanedInput.length < 8 || !store.styles.length) {
+    llmStyleRecommendation.value = null;
+    llmStyleCandidates.value = [];
+    stylePreviewItems.value = [];
+    return;
+  }
+
+  const controller = new AbortController();
+  autoStyleController = controller;
+  try {
+    const response = await recommendStylePrompt(
+      {
+        input_text: cleanedInput,
+        target: styleTargetForMode(detectedMode.value),
+        llm: store.llmConfig,
+        top_k: 4,
+        styles: store.styles.map((style) => ({
+          id: style.id,
+          name: style.name,
+          prompt: style.prompt,
+          audience: style.audience,
+          tone: style.tone,
+          structure_template: style.structure_template,
+          emphasis_points: style.emphasis_points,
+          layout_format: style.layout_format,
+          visual_mode: style.visual_mode,
+        })),
+      },
+      controller.signal,
+    );
+    if (autoStyleController !== controller) return;
+    if (!response.style_id) {
+      llmStyleRecommendation.value = null;
+      llmStyleCandidates.value = [];
+      stylePreviewItems.value = [];
+      return;
+    }
+    llmStyleRecommendation.value = {
+      styleId: response.style_id,
+      reason: response.reason?.trim() || "已由模型识别为更匹配的风格。",
+      score: Math.round((response.confidence ?? 0.8) * 100),
+    };
+    llmStyleCandidates.value = (response.candidates || [])
+      .map((candidate) => ({
+        styleId: candidate.style_id,
+        reason: candidate.reason?.trim() || "已由模型识别为较匹配的备选风格。",
+        score: Math.round((candidate.confidence ?? 0.6) * 100),
+      }))
+      .filter((candidate, index, list) => candidate.styleId && list.findIndex((item) => item.styleId === candidate.styleId) === index)
+      .slice(0, 4);
+  } catch (error) {
+    if (isRequestCanceled(error)) return;
+    if (autoStyleController !== controller) return;
+    llmStyleRecommendation.value = null;
+    llmStyleCandidates.value = [];
+    stylePreviewItems.value = [];
+  } finally {
+    if (autoStyleController === controller) {
+      autoStyleController = null;
+    }
+  }
+}
+
+async function runStylePreviewRequest() {
+  stopStylePreviewRequest();
+  const cleanedInput = inputValue.value.trim();
+  const candidateIds = stylePreviewCandidates.value.map((item) => item.styleId).slice(0, 3);
+  if (!cleanedInput || cleanedInput.length < 12 || candidateIds.length < 2) {
+    stylePreviewItems.value = [];
+    return;
+  }
+
+  const controller = new AbortController();
+  stylePreviewController = controller;
+  try {
+    const response = await previewStylePrompt(
+      {
+        input_text: cleanedInput,
+        target: styleTargetForMode(detectedMode.value),
+        llm: store.llmConfig,
+        style_ids: candidateIds,
+        max_items: candidateIds.length,
+        styles: store.styles
+          .filter((style) => candidateIds.includes(style.id))
+          .map((style) => ({
+            id: style.id,
+            name: style.name,
+            prompt: style.prompt,
+            audience: style.audience,
+            tone: style.tone,
+            structure_template: style.structure_template,
+            emphasis_points: style.emphasis_points,
+            layout_format: style.layout_format,
+            visual_mode: style.visual_mode,
+          })),
+      },
+      controller.signal,
+    );
+    if (stylePreviewController !== controller) return;
+    stylePreviewItems.value = response.previews || [];
+  } catch (error) {
+    if (isRequestCanceled(error)) return;
+    if (stylePreviewController !== controller) return;
+    stylePreviewItems.value = [];
+  } finally {
+    if (stylePreviewController === controller) {
+      stylePreviewController = null;
+    }
+  }
+}
+
+function queueStylePreviewRequest() {
+  clearStylePreviewTimer();
+  stylePreviewTimer = window.setTimeout(() => {
+    void runStylePreviewRequest();
+  }, 720);
+}
+
+function queueLLMStyleRecommendation() {
+  clearAutoStyleTimer();
+  autoStyleTimer = window.setTimeout(() => {
+    void runLLMStyleRecommendation();
+  }, 520);
 }
 
 function buildSteps(mode: DetectedMode, withImages: boolean): string[] {
@@ -305,6 +542,7 @@ async function handlePrimaryClick() {
 
   const value = inputValue.value.trim();
   if (!value) return;
+  stylePanelsCollapsed.value = true;
 
   // Reset previous result/errors
   cancel();
@@ -361,6 +599,7 @@ function resizeInput() {
 
 function handleMainInput(event: Event) {
   inputValue.value = (event.target as HTMLTextAreaElement).value;
+  stylePanelsCollapsed.value = false;
   resizeInput();
 }
 
@@ -466,6 +705,7 @@ function handleRestoreRun(entry: RecentRunEntry) {
   runMemory.markRunRestored(entry.id);
   inputValue.value = entry.input;
   manualStyleLocked.value = true;
+  store.autoStyleEnabled = false;
   if (entry.style_snapshot) {
     store.upsertStyle(entry.style_snapshot);
     store.selectedStyleId = entry.style_snapshot.id;
@@ -502,12 +742,19 @@ function openSettings(tab: "llm" | "styles" | "advanced") {
 
 function handleSelectStyle(id: string) {
   manualStyleLocked.value = true;
+  store.autoStyleEnabled = false;
   store.selectedStyleId = id;
+  stylePanelsCollapsed.value = false;
+}
+
+function handlePreviewSelectStyle(id: string) {
+  handleSelectStyle(id);
 }
 
 function enableAutoStyle() {
   store.autoStyleEnabled = true;
   manualStyleLocked.value = false;
+  stylePanelsCollapsed.value = false;
   if (autoStyleRecommendation.value?.styleId) {
     store.selectedStyleId = autoStyleRecommendation.value.styleId;
   }
@@ -529,9 +776,61 @@ watch(
   (value) => {
     if (!value) {
       manualStyleLocked.value = false;
+      llmStyleRecommendation.value = null;
+      llmStyleCandidates.value = [];
+      stylePreviewItems.value = [];
     }
   },
 );
+
+watch(
+  [
+    () => inputValue.value.trim(),
+    () => detectedMode.value,
+    () => store.autoStyleEnabled,
+    () => manualStyleLocked.value,
+    () => store.llmConfig.provider,
+    () => store.llmConfig.model,
+    () => store.styles.map((style) => style.id).join("|"),
+  ],
+  () => {
+    if (!store.autoStyleEnabled || manualStyleLocked.value || !inputValue.value.trim()) {
+      stopAutoStyleRequest();
+      llmStyleRecommendation.value = null;
+      llmStyleCandidates.value = [];
+      stylePreviewItems.value = [];
+      return;
+    }
+    queueLLMStyleRecommendation();
+  },
+  { immediate: true },
+);
+
+watch(
+  [
+    () => inputValue.value.trim(),
+    () => detectedMode.value,
+    () => store.autoStyleEnabled,
+    () => manualStyleLocked.value,
+    () => stylePreviewCandidates.value.map((item) => item.styleId).join("|"),
+    () => store.llmConfig.provider,
+    () => store.llmConfig.model,
+  ],
+  () => {
+    if (!store.autoStyleEnabled || manualStyleLocked.value || !inputValue.value.trim() || stylePreviewCandidates.value.length < 2) {
+      stopStylePreviewRequest();
+      stylePreviewItems.value = [];
+      return;
+    }
+    queueStylePreviewRequest();
+  },
+  { immediate: true },
+);
+
+onBeforeUnmount(() => {
+  stopAutoStyleRequest();
+  stopStylePreviewRequest();
+});
 
 initOnboarding();
 </script>
@@ -549,7 +848,7 @@ initOnboarding();
     <section class="center">
       <div class="brand">
         <h1 class="brand-title">VibeShift</h1>
-        <p class="brand-subtitle">把链接、正文或你想了解的问题粘贴进来，点一下开始就能生成结果。</p>
+        <p v-if="showStyleAssistant" class="brand-subtitle">把链接、正文或你想了解的问题粘贴进来，点一下开始就能生成结果。</p>
       </div>
 
       <div class="input-card">
@@ -563,7 +862,14 @@ initOnboarding();
           @input="handleMainInput"
         />
 
-        <div class="style-row" aria-label="风格卡片">
+        <div class="primary-row">
+          <button class="main-button" type="button" :disabled="!inputValue.trim()" @click="handlePrimaryClick">
+            {{ running ? "停止" : "开始" }}
+          </button>
+          <span class="hint">{{ inputHint }} Esc 停止。</span>
+        </div>
+
+        <div v-if="showStyleAssistant" class="style-row" aria-label="风格卡片">
           <button
             :class="['style-chip', 'style-chip-auto', { active: store.autoStyleEnabled && !manualStyleLocked }]"
             type="button"
@@ -584,12 +890,67 @@ initOnboarding();
             {{ style.name }}
           </button>
         </div>
-
-        <div class="primary-row">
-          <button class="main-button" type="button" :disabled="!inputValue.trim()" @click="handlePrimaryClick">
-            {{ running ? "停止" : "开始" }}
-          </button>
-          <span class="hint">{{ inputHint }} Esc 停止。</span>
+        <div
+          v-if="showStyleAssistant && recommendedStyleGuide"
+          class="state-card"
+        >
+          <strong>自动推荐：{{ recommendedStyleGuide.name }}</strong>
+          <p>{{ recommendedStyleGuide.reason }}</p>
+          <p class="hint">{{ recommendedStyleGuide.outcomeText }}</p>
+          <p v-if="recommendedStyleGuide.fitText" class="hint">{{ recommendedStyleGuide.fitText }}</p>
+          <p v-if="recommendedStyleGuide.approachText" class="hint">{{ recommendedStyleGuide.approachText }}</p>
+          <p v-if="recommendedStyleGuide.focusText" class="hint">{{ recommendedStyleGuide.focusText }}</p>
+          <p v-if="recommendedStyleGuide.previewText" class="hint">如果现在开始，开头大概会这样写：{{ recommendedStyleGuide.previewText }}</p>
+        </div>
+        <div v-if="showStyleAssistant && manualSelectedStyleGuide" class="state-card">
+          <strong>当前已选：{{ manualSelectedStyleGuide.name }}</strong>
+          <p>{{ manualSelectedStyleGuide.reason }}</p>
+          <p class="hint">{{ manualSelectedStyleGuide.outcomeText }}</p>
+          <p v-if="manualSelectedStyleGuide.fitText" class="hint">{{ manualSelectedStyleGuide.fitText }}</p>
+          <p v-if="manualSelectedStyleGuide.approachText" class="hint">{{ manualSelectedStyleGuide.approachText }}</p>
+          <p v-if="manualSelectedStyleGuide.focusText" class="hint">{{ manualSelectedStyleGuide.focusText }}</p>
+          <p v-if="manualSelectedStyleGuide.previewText" class="hint">如果现在开始，开头大概会这样写：{{ manualSelectedStyleGuide.previewText }}</p>
+          <p v-if="manualSelectedStyleGuide.previewFocusPoints.length" class="hint">
+            这一版会更突出：{{ manualSelectedStyleGuide.previewFocusPoints.join(" / ") }}
+          </p>
+        </div>
+        <div
+          v-if="showStyleAssistant && store.autoStyleEnabled && !manualStyleLocked && inputValue.trim() && stylePreviewCandidates.length > 1"
+          class="discover-brief-grid"
+          style="margin-top: 0.9rem"
+        >
+          <article
+            v-for="candidate in stylePreviewCandidates"
+            :key="candidate.styleId"
+            class="discover-brief-card"
+          >
+            <div class="discover-brief-head">
+              <div>
+                <h3>{{ candidate.name }}</h3>
+                <p>{{ candidate.reason }}</p>
+              </div>
+              <span class="workflow-pill">{{ candidate.source === "llm" ? "模型优先" : "备选" }}</span>
+            </div>
+            <p class="hint">{{ candidate.outcomeText }}</p>
+            <p v-if="candidate.fitText" class="hint">{{ candidate.fitText }}</p>
+            <p v-if="candidate.approachText" class="hint">{{ candidate.approachText }}</p>
+            <p v-if="candidate.focusText" class="hint">{{ candidate.focusText }}</p>
+            <p v-if="candidate.previewText" class="hint" style="margin-top: 0.55rem">如果现在开始，开头大概会这样写：{{ candidate.previewText }}</p>
+            <p v-else class="hint" style="margin-top: 0.55rem">正在生成该风格的开头预演…</p>
+            <p v-if="candidate.previewFocusPoints.length" class="hint">
+              这一版会更突出：{{ candidate.previewFocusPoints.join(" / ") }}
+            </p>
+            <div class="result-actions" style="padding: 0; margin-top: 0.75rem">
+              <button
+                class="ghost-button"
+                type="button"
+                :disabled="running || candidate.styleId === store.selectedStyleId"
+                @click="handlePreviewSelectStyle(candidate.styleId)"
+              >
+                {{ candidate.styleId === store.selectedStyleId ? "当前使用" : "切换到此风格" }}
+              </button>
+            </div>
+          </article>
         </div>
 
         <ProgressStepper

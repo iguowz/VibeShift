@@ -6,7 +6,7 @@ vi.mock("../lib/shareFormats", async () => {
   const actual = await vi.importActual<typeof import("../lib/shareFormats")>("../lib/shareFormats");
   return {
     ...actual,
-    exportHtmlToPdf: vi.fn(),
+    exportHistoryResultPdf: vi.fn(),
   };
 });
 
@@ -57,11 +57,13 @@ describe("HistoryResultViewer", () => {
       },
     });
 
-    expect(document.body.textContent || "").toContain("你最可能关心的内容");
+    expect(document.body.textContent || "").toContain("可直接发送的简报");
     expect(document.body.textContent || "").toContain("FastAPI 适合高开发效率场景");
     expect(document.body.textContent || "").toContain("内容较长");
     expect(document.body.textContent || "").toContain("官方文档");
     expect(document.body.textContent || "").toContain("相关度 8.50");
+    expect(document.body.textContent || "").toContain("简报");
+    expect(document.body.textContent || "").toContain("详文");
     wrapper.unmount();
   });
 
@@ -116,7 +118,7 @@ describe("HistoryResultViewer", () => {
 
   it("supports fullscreen, copy and export", async () => {
     (navigator.clipboard.writeText as any).mockClear?.();
-    vi.mocked(shareFormats.exportHtmlToPdf).mockClear();
+    vi.mocked(shareFormats.exportHistoryResultPdf).mockClear();
 
     const wrapper = mount(HistoryResultViewer, {
       attachTo: document.body,
@@ -151,8 +153,8 @@ describe("HistoryResultViewer", () => {
       },
     });
 
-    const copyButton = buttonByText("复制结果");
-    const exportButton = buttonByText("导出 PDF");
+    const copyButton = buttonByText("复制公众号长文");
+    const exportButton = buttonByText("导出成稿 PDF");
     const fullscreenButton = buttonByText("全屏查看");
 
     expect(copyButton).toBeTruthy();
@@ -160,10 +162,12 @@ describe("HistoryResultViewer", () => {
     expect(fullscreenButton).toBeTruthy();
 
     (copyButton as HTMLButtonElement).click();
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("# 历史改写结果\n\n## 正文\n内容保留");
+    expect(String((navigator.clipboard.writeText as any).mock.calls.at(-1)?.[0] || "")).toContain("# 历史改写结果");
+    expect(String((navigator.clipboard.writeText as any).mock.calls.at(-1)?.[0] || "")).toContain("## 正文");
+    expect(String((navigator.clipboard.writeText as any).mock.calls.at(-1)?.[0] || "")).toContain("内容保留");
 
     (exportButton as HTMLButtonElement).click();
-    expect(shareFormats.exportHtmlToPdf).toHaveBeenCalled();
+    expect(shareFormats.exportHistoryResultPdf).toHaveBeenCalled();
 
     (fullscreenButton as HTMLButtonElement).click();
     await nextTick();
@@ -183,28 +187,28 @@ describe("HistoryResultViewer", () => {
         entry: {
           id: "run_history_share",
           mode: "discover",
-          title: "黑洞是什么",
-          input: "黑洞是什么",
-          input_preview: "黑洞是什么",
+          title: "部署简报",
+          input: "部署简报",
+          input_preview: "部署简报",
           created_at: "2025-01-01T08:00:00Z",
-          style_id: "science",
-          style_name: "科普风",
+          style_id: "poster",
+          style_name: "海报风",
           style_snapshot: createStyleTemplate({
-            id: "science",
-            name: "科普风",
-            prompt: "先讲清原理，再解释常见误区。",
+            id: "poster",
+            name: "海报风",
+            prompt: "大标题 -> 一句话结论 -> 重点卡片 -> 行动建议。",
           }),
           provider: "openai",
           model: "gpt-4o-mini",
-          summary: "解释黑洞基本概念",
+          summary: "部署建议摘要",
           result_excerpt: "历史结果摘要",
-          result_text: "## 直接结论\n黑洞是引力极强的天体。",
+          result_text: "## 一句话结论\n优先采用容器化部署。",
           result_truncated: false,
           result_too_long: false,
-          brief_summary: "解释了黑洞的基本概念",
-          brief_conclusion: "黑洞是引力极强的天体",
-          brief_key_findings: ["并不是宇宙吸尘器", "来自恒星坍缩"],
-          source_preview: [{ id: 1, title: "百科来源", url: "https://example.com/wiki", relevance_score: 9.1 }],
+          brief_summary: "整理了部署建议。",
+          brief_conclusion: "优先采用容器化部署。",
+          brief_key_findings: ["上线节奏更稳", "回滚成本更低"],
+          source_preview: [{ id: 1, title: "部署来源", url: "https://example.com/deploy", relevance_score: 9.1 }],
           source_count: 1,
           quality_score: 4,
           restore_count: 0,
@@ -218,14 +222,178 @@ describe("HistoryResultViewer", () => {
     details.open = true;
     await nextTick();
 
-    const shareButton = buttonByText("小红书");
+    const shareButton = buttonByText("小红书笔记");
     expect(shareButton).toBeTruthy();
     (shareButton as HTMLButtonElement).click();
     await nextTick();
 
     expect(navigator.clipboard.writeText).toHaveBeenCalled();
-    expect(String((navigator.clipboard.writeText as any).mock.calls.at(-1)?.[0] || "")).toContain("# 黑洞是什么");
+    expect(document.body.textContent || "").toContain("适合重点前置、节奏更快的图文发布");
+    expect(document.body.textContent || "").toContain("主按钮成稿预览");
+    expect(document.body.textContent || "").toContain("小红书笔记");
+    expect(String((navigator.clipboard.writeText as any).mock.calls.at(-1)?.[0] || "")).toContain("【部署简报】");
+    expect(String((navigator.clipboard.writeText as any).mock.calls.at(-1)?.[0] || "")).not.toContain("## 直接结论");
     expect(details.open).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("copies and exports discover history by active tab", async () => {
+    (navigator.clipboard.writeText as any).mockClear?.();
+    vi.mocked(shareFormats.exportHistoryResultPdf).mockClear();
+
+    const wrapper = mount(HistoryResultViewer, {
+      attachTo: document.body,
+      props: {
+        entry: {
+          id: "run_history_tabs",
+          mode: "discover",
+          title: "部署方案评估",
+          input: "部署方案评估",
+          input_preview: "部署方案评估",
+          created_at: "2025-01-01T08:00:00Z",
+          style_id: "briefing",
+          style_name: "简报风",
+          style_snapshot: createStyleTemplate({
+            id: "briefing",
+            name: "简报风",
+            prompt: "一句话结论 -> 关键判断 -> 风险",
+          }),
+          provider: "openai",
+          model: "gpt-4o-mini",
+          summary: "部署方案比较",
+          result_excerpt: "这里是结果摘要",
+          result_text: "# 部署方案评估\n\n## 正文\n这里是完整详文。",
+          result_truncated: false,
+          result_too_long: false,
+          brief_summary: "比较了当前可选方案。",
+          brief_conclusion: "优先采用容器化部署。",
+          brief_key_findings: ["上线节奏更稳", "回滚成本更低"],
+          source_preview: [],
+          source_count: 0,
+          quality_score: 4,
+          restore_count: 0,
+          pinned_for_style_memory: false,
+          run: null,
+        },
+      },
+    });
+
+    const copyButton = buttonByText("复制公众号长文");
+    expect(copyButton).toBeTruthy();
+    expect(document.body.textContent || "").toContain("更多场景成稿（简报）");
+    (copyButton as HTMLButtonElement).click();
+    expect(String((navigator.clipboard.writeText as any).mock.calls.at(-1)?.[0] || "")).toContain("优先采用容器化部署。");
+    expect(String((navigator.clipboard.writeText as any).mock.calls.at(-1)?.[0] || "")).not.toContain("完整详文");
+
+    const reportTab = buttonByText("详文");
+    expect(reportTab).toBeTruthy();
+    (reportTab as HTMLButtonElement).click();
+    await nextTick();
+
+    expect(document.body.textContent || "").toContain("复制详文成稿");
+    expect(document.body.textContent || "").toContain("更多场景成稿（详文）");
+    expect(document.body.textContent || "").toContain("详文导读");
+    (copyButton as HTMLButtonElement).click();
+    expect(String((navigator.clipboard.writeText as any).mock.calls.at(-1)?.[0] || "")).toContain("# 部署方案评估");
+    expect(String((navigator.clipboard.writeText as any).mock.calls.at(-1)?.[0] || "")).toContain("完整详文");
+
+    const exportButton = buttonByText("导出 PDF");
+    expect(exportButton).toBeTruthy();
+    (exportButton as HTMLButtonElement).click();
+    expect(shareFormats.exportHistoryResultPdf).toHaveBeenCalledWith(expect.any(Object), "report");
+
+    wrapper.unmount();
+  });
+
+  it("renders history snapshots with style-aware dialogue layout", async () => {
+    const wrapper = mount(HistoryResultViewer, {
+      attachTo: document.body,
+      props: {
+        entry: {
+          id: "run_history_dialogue",
+          mode: "transform",
+          title: "访谈稿",
+          input: "原始访谈",
+          input_preview: "原始访谈",
+          created_at: "2025-01-01T08:00:00Z",
+          style_id: "interview",
+          style_name: "访谈问答",
+          style_snapshot: createStyleTemplate({
+            id: "interview",
+            name: "访谈问答",
+            prompt: "整理成问答稿。",
+          }),
+          provider: "openai",
+          model: "gpt-4o-mini",
+          summary: "一组关键问答",
+          result_excerpt: "一组关键问答",
+          result_text: "问：为什么改成问答稿？\n答：因为读者更容易抓重点。\n\n问：重点是什么？\n答：让内容拿来就能用。",
+          result_truncated: false,
+          result_too_long: false,
+          brief_summary: "",
+          brief_conclusion: "",
+          brief_key_findings: [],
+          source_preview: [],
+          source_count: 0,
+          quality_score: 4,
+          restore_count: 0,
+          pinned_for_style_memory: false,
+          run: null,
+        },
+      },
+    });
+
+    await nextTick();
+    const article = document.body.querySelector(".history-markdown") as HTMLElement;
+    expect(article.innerHTML).toContain("dialogue-render-block");
+    expect(article.textContent || "").toContain("为什么改成问答稿");
+    wrapper.unmount();
+  });
+
+  it("renders longform guide for history report snapshots", async () => {
+    const wrapper = mount(HistoryResultViewer, {
+      attachTo: document.body,
+      props: {
+        entry: {
+          id: "run_history_editorial",
+          mode: "transform",
+          title: "评论稿",
+          input: "原始内容",
+          input_preview: "原始内容",
+          created_at: "2025-01-01T08:00:00Z",
+          style_id: "editorial",
+          style_name: "评论风",
+          style_snapshot: createStyleTemplate({
+            id: "editorial",
+            name: "评论风",
+            prompt: "观点 -> 事实依据 -> 分析推进 -> 结论与建议。",
+          }),
+          provider: "openai",
+          model: "gpt-4o-mini",
+          summary: "一篇带判断的评论稿",
+          result_excerpt: "一篇带判断的评论稿",
+          result_text:
+            "# 评论稿\n\n先把判断讲清：现在更适合稳步推进。\n\n## 事实依据\n\n数据和反馈都支持这个判断。\n\n## 分析推进\n\n团队仍在磨合期。\n\n因此，先稳后快会更合理。",
+          result_truncated: false,
+          result_too_long: false,
+          brief_summary: "",
+          brief_conclusion: "",
+          brief_key_findings: [],
+          source_preview: [],
+          source_count: 0,
+          quality_score: 4,
+          restore_count: 0,
+          pinned_for_style_memory: false,
+          run: null,
+        },
+      },
+    });
+
+    await nextTick();
+    expect(document.body.textContent || "").toContain("导语判断");
+    expect(document.body.textContent || "").toContain("论证抓手");
+    expect(document.body.textContent || "").toContain("结尾落点");
+    expect(document.body.querySelector(".deliverable-guide-closing")).toBeTruthy();
     wrapper.unmount();
   });
 });

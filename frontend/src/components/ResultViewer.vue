@@ -1,9 +1,19 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 
-import { detectRichTextFormat, renderMarkdownToHtml, renderRichTextToHtml, stripLeadingRichTitle } from "../lib/markdown";
-import { buildTransformShareText, exportTransformResultPdf, type ShareTarget } from "../lib/shareFormats";
-import { getResultFocusPresentation } from "../lib/stylePresentation";
+import { detectRichTextFormat, stripLeadingRichTitle } from "../lib/markdown";
+import { renderStyleBodyHtml } from "../lib/styleBodyRender";
+import { buildLongformGuide } from "../lib/styleLongform";
+import {
+  buildPreferredTransformCopyText,
+  buildTransformShareText,
+  exportTransformResultPdf,
+  getRecommendedShareTarget,
+  getShareTargetMeta,
+  type ShareTarget,
+} from "../lib/shareFormats";
+import { classifyStyleProfile, getResultFocusPresentation } from "../lib/stylePresentation";
+import { buildTransformFocusSummary, buildTransformHighlightBlock } from "../lib/styleSummary";
 import type { GeneratedImage, StyleSkillProfile, TransformResponse } from "../types";
 
 const props = defineProps<{
@@ -199,11 +209,46 @@ function clampText(value: string, maxLength: number) {
   return `${raw.slice(0, Math.max(0, maxLength - 1)).trim()}…`;
 }
 
+function normalizeComparableText(value: string) {
+  return String(value || "").replace(/\r\n/g, "\n").replace(/\n{2,}/g, "\n\n").trim();
+}
+
 function splitSummarySentences(value: string) {
   return String(value || "")
     .split(/[。！？!?；;\n]/)
     .map((item) => item.trim())
     .filter((item) => item.length >= 14);
+}
+
+function extractHeadingCandidates(markdown: string) {
+  return String(markdown || "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /^#{1,6}\s+/.test(line))
+    .map((line) => stripSummaryMarkdown(line))
+    .filter((line) => line.length >= 8);
+}
+
+function extractDialogueCandidates(paragraphs: string[]) {
+  return paragraphs
+    .flatMap((item) =>
+      item
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean),
+    )
+    .filter((line) => /^(q|a|问|答|主持人|嘉宾|采访者|受访者|提问者|回答者)[：: ]/i.test(line) || (/[:：]/.test(line) && /[?？]/.test(line.slice(0, 18))))
+    .map((line) => clampText(stripSummaryMarkdown(line), 60));
+}
+
+function extractStepCandidates(paragraphs: string[], bulletLines: string[]) {
+  const stepParagraphs = paragraphs
+    .filter((item) => /步骤|step|前置条件|第[一二三四五六七八九十\d]+步|操作|排错/.test(item))
+    .flatMap((item) => splitSummarySentences(item).length ? splitSummarySentences(item) : [item]);
+  return [...bulletLines, ...stepParagraphs]
+    .map((item) => clampText(stripSummaryMarkdown(item), 60))
+    .filter((item) => item.length >= 10);
 }
 
 function cleanExcerptForSummary(rawExcerpt: string) {
@@ -217,42 +262,7 @@ function cleanExcerptForSummary(rawExcerpt: string) {
 }
 
 function buildFocusSummary(result: TransformResponse | null) {
-  const focusMeta = getResultFocusPresentation(props.styleProfile);
-  const narrativeMode = focusMeta.summaryMode === "narrative";
-  const stepMode = focusMeta.summaryMode === "steps";
-  const decisionMode = focusMeta.summaryMode === "decision";
-  const dialogueMode = focusMeta.summaryMode === "dialogue";
-  if (!result) {
-    return { lead: "", bullets: [] as string[] };
-  }
-  const normalizedBody = stripLeadingRichTitle(result.transformed_text);
-  const cleanedBody = stripSummaryMarkdown(normalizedBody);
-  const paragraphs = splitMarkdownParagraphs(normalizedBody)
-    .map((item) => stripSummaryMarkdown(item))
-    .filter((item) => item.length >= 18 && !METADATA_LINE_PATTERN.test(item));
-  const bulletLines = String(normalizedBody || "")
-    .replace(/\r\n/g, "\n")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => /^([-*+]\s+|\d+\.\s+)/.test(line))
-    .map((line) => stripSummaryMarkdown(line))
-    .filter((line) => line.length >= 10);
-  const excerpt = cleanExcerptForSummary(result.raw_excerpt);
-  const leadSource =
-    (narrativeMode ? paragraphs[0] : "") ||
-    paragraphs.find((item) => item.length >= 24) ||
-    excerpt ||
-    cleanedBody;
-  const lead = clampText(leadSource, 120);
-
-  const sentenceCandidates = paragraphs
-    .flatMap((item) => splitSummarySentences(item))
-    .filter((item) => item !== lead);
-  const bulletCandidates = [...bulletLines, ...sentenceCandidates]
-    .map((item) => clampText(item, 54))
-    .filter((item, index, list) => item.length >= 12 && list.indexOf(item) === index && item !== lead);
-  const bullets = narrativeMode ? [] : bulletCandidates.slice(0, stepMode ? 4 : dialogueMode ? 2 : decisionMode ? 3 : 3);
-  return { lead, bullets };
+  return buildTransformFocusSummary(result, props.styleProfile);
 }
 
 const focusPresentation = computed(() => getResultFocusPresentation(props.styleProfile));
@@ -349,10 +359,16 @@ async function copyMarkdown() {
 
 async function copyForTarget(target: ShareTarget) {
   if (!props.result) return;
-  const text = buildTransformShareText(props.result, target);
+  const text = buildTransformShareText(props.result, target, props.styleProfile);
   await navigator.clipboard.writeText(text);
   closeShareMenu();
-  setCopyNotice(`已复制${target === "xiaohongshu" ? "小红书" : target === "moments" ? "朋友圈" : target === "wechat" ? "公众号" : "知乎"}格式`);
+  setCopyNotice(getShareTargetMeta(target).copied);
+}
+
+async function copyPreferredDeliverable() {
+  if (!props.result) return;
+  await navigator.clipboard.writeText(buildPreferredTransformCopyText(props.result, props.styleProfile));
+  setCopyNotice(preferredTargetMeta.value.copied);
 }
 
 async function copyRichText() {
@@ -380,7 +396,7 @@ function exportPdf() {
   if (!props.result) return;
   closeShareMenu();
   try {
-    exportTransformResultPdf(props.result);
+    exportTransformResultPdf(props.result, props.styleProfile);
     setCopyNotice("已打开导出页，请在新页面点击“打印 / 另存为 PDF”");
   } catch (error) {
     setCopyNotice(error instanceof Error ? error.message : "导出 PDF 失败，请稍后重试");
@@ -441,15 +457,14 @@ const contentFormat = computed(() => detectRichTextFormat(normalizedContent.valu
 
 const displayMarkdownHtml = computed(() => {
   if (!props.result) return "";
-  if (props.imagePlacement === "interleave" && contentFormat.value !== "html") {
-    return renderMarkdownToHtml(editorMarkdown.value);
-  }
-  return renderRichTextToHtml(normalizedContent.value);
+  const content = props.imagePlacement === "interleave" && contentFormat.value !== "html" ? editorMarkdown.value : normalizedContent.value;
+  return renderStyleBodyHtml(content, focusHighlights.value.mode, styleFamily.value);
 });
 
 const editorHtmlDocument = computed(() => {
   if (!editorMarkdown.value) return "";
-  const html = renderMarkdownToHtml(editorMarkdown.value);
+  const content = props.imagePlacement === "interleave" && contentFormat.value !== "html" ? editorMarkdown.value : normalizedContent.value;
+  const html = renderStyleBodyHtml(content, focusHighlights.value.mode, styleFamily.value);
   return `<!doctype html><html><body>${html}</body></html>`;
 });
 
@@ -464,6 +479,40 @@ const showLongContentHint = computed(() => {
 });
 
 const focusSummary = computed(() => buildFocusSummary(props.result));
+const focusHighlights = computed(() => buildTransformHighlightBlock(props.result, props.styleProfile));
+const bodyRenderClass = computed(() => `body-render-${focusHighlights.value.mode}`);
+const styleFamily = computed(() => classifyStyleProfile(props.styleProfile));
+const styleFamilyClass = computed(() => `style-family-${styleFamily.value}`);
+const preferredTarget = computed(() => getRecommendedShareTarget(styleFamily.value, "transform"));
+const preferredTargetMeta = computed(() => getShareTargetMeta(preferredTarget.value));
+const preferredDeliverableText = computed(() => (props.result ? buildPreferredTransformCopyText(props.result, props.styleProfile) : ""));
+const preferredDeliverableHtml = computed(() =>
+  preferredDeliverableText.value
+    ? renderStyleBodyHtml(stripLeadingRichTitle(preferredDeliverableText.value), focusHighlights.value.mode, styleFamily.value)
+    : "",
+);
+const showPreferredDeliverablePreview = computed(() => {
+  if (!props.result || !preferredDeliverableText.value) return false;
+  return normalizeComparableText(stripLeadingRichTitle(preferredDeliverableText.value)) !== normalizeComparableText(normalizedContent.value);
+});
+const shareTargetOptions = computed(() => {
+  const allTargets: ShareTarget[] = ["xiaohongshu", "moments", "wechat", "zhihu"];
+  return [preferredTarget.value, ...allTargets.filter((item) => item !== preferredTarget.value)].map((target) => ({
+    target,
+    title: `${getShareTargetMeta(target).deliverable}${target === preferredTarget.value ? "（推荐）" : ""}`,
+    description: getShareTargetMeta(target).description,
+  }));
+});
+const primaryActionLabel = computed(() => preferredTargetMeta.value.action);
+const shareActionLabel = computed(() => "更多场景成稿");
+const exportActionLabel = computed(() => "导出成稿 PDF");
+const resultReadyKicker = computed(() => "这篇内容已整理成可直接使用的成稿");
+const resultReadyHelper = computed(() =>
+  props.result?.source_url
+    ? `主按钮和 PDF 导出会直接使用更适合当前风格分发的${preferredTargetMeta.value.deliverable}；如需对照原文，可用下方链接回看来源。`
+    : `主按钮和 PDF 导出会直接使用更适合当前风格分发的${preferredTargetMeta.value.deliverable}，无需再自行整理结构。`,
+);
+const longformGuide = computed(() => buildLongformGuide(normalizedContent.value, props.styleProfile));
 const readingLength = computed(() => Math.max(1, Math.round((normalizedContent.value.length || 0) / 450)));
 const durationLabel = computed(() => (props.result ? formatDuration(props.result.meta.duration_ms) : ""));
 
@@ -490,7 +539,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div v-if="fullscreen" class="fullscreen-backdrop" @click="fullscreen = false"></div>
-  <section :class="['panel', 'result-panel', layoutClass, { fullscreen }]">
+  <section :class="['panel', 'result-panel', layoutClass, styleFamilyClass, { fullscreen }]">
     <div class="panel-heading result-heading">
       <div class="result-heading-copy">
         <h2>生成结果</h2>
@@ -500,19 +549,25 @@ onBeforeUnmount(() => {
       </div>
       <div v-if="showOutput && props.result" class="result-toolbar">
         <div class="result-toolbar-group">
-          <button class="secondary-button toolbar-button" type="button" @click="copyText(props.result.transformed_text)">
-            复制文字
+          <button class="secondary-button toolbar-button" type="button" @click="copyPreferredDeliverable">
+            {{ primaryActionLabel }}
           </button>
           <details ref="shareMenuRef" class="copy-more compact-menu">
-            <summary class="ghost-button toolbar-button">分享 / 导出</summary>
+            <summary class="ghost-button toolbar-button">{{ shareActionLabel }}</summary>
             <div class="copy-more-menu">
               <button class="ghost-button" type="button" @click="copyRichText">复制图文</button>
               <button class="ghost-button" type="button" @click="copyMarkdown">复制（编辑器用）</button>
-              <button class="ghost-button" type="button" @click="copyForTarget('xiaohongshu')">复制小红书格式</button>
-              <button class="ghost-button" type="button" @click="copyForTarget('moments')">复制朋友圈格式</button>
-              <button class="ghost-button" type="button" @click="copyForTarget('wechat')">复制公众号格式</button>
-              <button class="ghost-button" type="button" @click="copyForTarget('zhihu')">复制知乎格式</button>
-              <button class="ghost-button" type="button" @click="exportPdf">导出 PDF</button>
+              <button
+                v-for="option in shareTargetOptions"
+                :key="option.target"
+                class="ghost-button share-target-button"
+                type="button"
+                @click="copyForTarget(option.target)"
+              >
+                <strong>{{ option.title }}</strong>
+                <span>{{ option.description }}</span>
+              </button>
+              <button class="ghost-button" type="button" @click="exportPdf">{{ exportActionLabel }}</button>
             </div>
           </details>
           <button class="ghost-button toolbar-button" type="button" @click="toggleFullscreen">
@@ -526,13 +581,19 @@ onBeforeUnmount(() => {
     <div v-if="props.result" class="result-stack">
       <section v-if="showOutput" class="discover-summary-board">
         <article class="discover-highlight-card">
-          <span class="section-kicker">{{ focusPresentation.kicker }}</span>
+          <span class="section-kicker">{{ resultReadyKicker }}</span>
           <h2>{{ props.result.title }}</h2>
           <p>{{ focusSummary.lead || "正文已经整理完成，可继续阅读、复制或导出。" }}</p>
-          <p v-if="focusPresentation.helper" class="hint">{{ focusPresentation.helper }}</p>
-          <ul v-if="focusSummary.bullets.length" class="discover-list summary-points">
-            <li v-for="item in focusSummary.bullets" :key="item">{{ item }}</li>
-          </ul>
+          <p class="hint">{{ resultReadyHelper }}</p>
+          <div
+            v-if="focusHighlights.items.length"
+            :class="['summary-highlight-grid', `summary-highlight-${focusHighlights.mode}`]"
+          >
+            <article v-for="item in focusHighlights.items" :key="`${item.eyebrow}-${item.text}`" class="summary-highlight-card">
+              <span class="summary-highlight-label">{{ item.eyebrow }}</span>
+              <p>{{ item.text }}</p>
+            </article>
+          </div>
           <div v-if="props.result.source_url" class="summary-link-row">
             <a :href="props.result.source_url" target="_blank" rel="noreferrer">查看原链接</a>
           </div>
@@ -586,6 +647,43 @@ onBeforeUnmount(() => {
         <p>已启用稳定渲染，首屏优先展示正文；如果滚动较慢，建议使用“全屏阅读”或“复制（编辑器用）”。</p>
       </div>
 
+      <article v-if="showOutput && showPreferredDeliverablePreview" :class="['discover-deliverable-card', bodyRenderClass]">
+        <div class="discover-deliverable-head">
+          <div>
+            <h4>主按钮成稿预览</h4>
+            <p>点击主按钮或导出 PDF 时，会直接使用这份 {{ preferredTargetMeta.deliverable }}。</p>
+          </div>
+          <span class="workflow-pill">{{ preferredTargetMeta.deliverable }}</span>
+        </div>
+        <div class="markdown" v-html="preferredDeliverableHtml" />
+      </article>
+
+      <section v-if="showOutput && (longformGuide.introText || longformGuide.highlights.length || longformGuide.sections.length)" class="deliverable-guide-panel">
+        <article class="deliverable-guide-card deliverable-guide-intro">
+          <span class="section-kicker">{{ longformGuide.introLabel }}</span>
+          <p>{{ longformGuide.introText || "正文已经整理成适合直接发布的成稿。" }}</p>
+        </article>
+        <article v-if="longformGuide.highlights.length" class="deliverable-guide-card">
+          <h4>{{ longformGuide.highlightTitle }}</h4>
+          <div class="deliverable-guide-grid">
+            <article v-for="item in longformGuide.highlights" :key="`${item.label}-${item.text}`" class="deliverable-guide-item">
+              <span class="summary-highlight-label">{{ item.label }}</span>
+              <p>{{ item.text }}</p>
+            </article>
+          </div>
+        </article>
+        <article v-if="longformGuide.sections.length" class="deliverable-guide-card">
+          <h4>{{ longformGuide.sectionTitle }}</h4>
+          <div class="deliverable-section-list">
+            <span v-for="item in longformGuide.sections" :key="item" class="workflow-pill">{{ item }}</span>
+          </div>
+        </article>
+        <article v-if="longformGuide.closingText" class="deliverable-guide-card deliverable-guide-closing">
+          <h4>{{ longformGuide.closingLabel }}</h4>
+          <p>{{ longformGuide.closingText }}</p>
+        </article>
+      </section>
+
       <section v-if="showOutput && props.result.images.length && props.imagePlacement === 'header'" class="image-grid">
         <article v-for="(image, index) in props.result.images" :key="image.id" class="image-card">
           <div class="image-media">
@@ -622,7 +720,7 @@ onBeforeUnmount(() => {
         </article>
       </section>
 
-      <article v-if="showOutput" class="result-article markdown" v-html="displayMarkdownHtml" />
+      <article v-if="showOutput" :class="['result-article', 'markdown', bodyRenderClass]" v-html="displayMarkdownHtml" />
 
       <details v-if="showOutput && props.result.images.length && props.imagePlacement === 'interleave'" class="meta-card">
         <summary class="sources-summary">插图（可编辑/重新生成）</summary>

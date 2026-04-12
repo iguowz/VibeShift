@@ -80,6 +80,7 @@ class TransformService:
                 total_chunks=total_chunks,
                 context_brief=context_brief,
                 outline_text=outline_text,
+                style_profile=payload.style_profile,
             )
             chunk_config = self._config_for_stage(payload, "chunk")
             chunk_result = await self.llm_service.rewrite(chunk_messages, chunk_config)
@@ -184,6 +185,7 @@ class TransformService:
                 style_prompt,
                 context_brief=context_brief,
                 outline_text=outline_text,
+                style_profile=payload.style_profile,
             )
             return await self.llm_service.rewrite(messages, self._config_for_stage(payload, "merge"))
 
@@ -221,6 +223,7 @@ class TransformService:
             context_brief=context_brief,
             outline_text=outline_text,
             verify_final=verify_in_merge,
+            style_profile=payload.style_profile,
         )
         return await self.llm_service.rewrite(merge_messages, self._config_for_stage(payload, "merge"))
 
@@ -246,7 +249,12 @@ class TransformService:
         style_prompt: str,
         context_brief: str,
     ) -> str:
-        messages = build_rewrite_outline_messages(source, style_prompt, context_brief=context_brief)
+        messages = build_rewrite_outline_messages(
+            source,
+            style_prompt,
+            context_brief=context_brief,
+            style_profile=payload.style_profile,
+        )
         return (await self.llm_service.rewrite(messages, self._config_for_stage(payload, "outline"))).strip()
 
     async def _verify_rewrite(
@@ -264,6 +272,7 @@ class TransformService:
             draft_text=draft_text,
             context_brief=context_brief,
             outline_text=outline_text,
+            style_profile=payload.style_profile,
         )
         return (await self.llm_service.rewrite(messages, self._config_for_stage(payload, "verify"))).strip()
 

@@ -7,6 +7,10 @@ import type {
   DiscoverPayload,
   DiscoverResponse,
   ImageRegeneratePayload,
+  StylePreviewPayload,
+  StylePreviewResponse,
+  StyleRecommendPayload,
+  StyleRecommendResponse,
   StylePromptOptimizePayload,
   StylePromptOptimizeResponse,
   TransformPayload,
@@ -112,5 +116,15 @@ export async function submitDiscover(payload: DiscoverPayload, signal?: AbortSig
 
 export async function optimizeStylePrompt(payload: StylePromptOptimizePayload, signal?: AbortSignal) {
   const response = await api.post<StylePromptOptimizeResponse>("/style-prompts/optimize", payload, { signal });
+  return response.data;
+}
+
+export async function recommendStylePrompt(payload: StyleRecommendPayload, signal?: AbortSignal) {
+  const response = await api.post<StyleRecommendResponse>("/style-prompts/recommend", payload, { signal });
+  return response.data;
+}
+
+export async function previewStylePrompt(payload: StylePreviewPayload, signal?: AbortSignal) {
+  const response = await api.post<StylePreviewResponse>("/style-prompts/preview", payload, { signal });
   return response.data;
 }

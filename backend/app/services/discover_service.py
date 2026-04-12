@@ -194,6 +194,7 @@ class DiscoverService:
                     research_brief = await self._generate_research_brief(
                         query=query,
                         style_prompt=style_prompt,
+                        style_profile=payload.style_profile,
                         evidence_items=evidence_items,
                         sources=sources,
                         llm_config=payload.llm,
@@ -214,6 +215,7 @@ class DiscoverService:
                     draft_text = await self._generate_draft(
                         query=query,
                         style_prompt=style_prompt,
+                        style_profile=payload.style_profile,
                         evidence_items=evidence_items,
                         sources=sources,
                         llm_config=payload.llm,
@@ -234,6 +236,7 @@ class DiscoverService:
                 transformed_text = await self._generate_report(
                     query=query,
                     style_prompt=style_prompt,
+                    style_profile=payload.style_profile,
                     evidence_items=evidence_items,
                     sources=sources,
                     llm_config=payload.llm,
@@ -800,6 +803,7 @@ class DiscoverService:
         self,
         query: str,
         style_prompt: str,
+        style_profile,
         evidence_items: list[DiscoverEvidenceItem],
         sources: list[SearchSource],
         llm_config,
@@ -811,6 +815,7 @@ class DiscoverService:
             evidence_items=evidence_items,
             sources=sources,
             context_brief=context_brief,
+            style_profile=style_profile,
         )
         raw = await self.llm_service.rewrite(messages, llm_config)
         payload = self._extract_json_payload(raw)
@@ -840,6 +845,7 @@ class DiscoverService:
         self,
         query: str,
         style_prompt: str,
+        style_profile,
         evidence_items: list[DiscoverEvidenceItem],
         sources: list[SearchSource],
         llm_config,
@@ -853,6 +859,7 @@ class DiscoverService:
             sources=sources,
             research_brief=research_brief,
             context_brief=context_brief,
+            style_profile=style_profile,
         )
         result = await self.llm_service.rewrite(messages, llm_config)
         return result.strip()
@@ -861,6 +868,7 @@ class DiscoverService:
         self,
         query: str,
         style_prompt: str,
+        style_profile,
         evidence_items: list[DiscoverEvidenceItem],
         sources: list[SearchSource],
         llm_config,
@@ -876,6 +884,7 @@ class DiscoverService:
             research_brief=research_brief,
             draft_markdown=draft_text,
             context_brief=context_brief,
+            style_profile=style_profile,
         )
         result = await self.llm_service.rewrite(messages, llm_config)
         return result.strip()

@@ -345,3 +345,53 @@ export interface StylePromptOptimizeResponse {
   notes: string[];
   profile_suggestion?: StyleProfileSuggestion | null;
 }
+
+export interface StyleRecommendPayload {
+  input_text: string;
+  target: StylePromptTarget;
+  llm: LLMConfig;
+  top_k?: number;
+  styles: Array<
+    Pick<
+      StyleTemplate,
+      "id" | "name" | "prompt" | "audience" | "tone" | "structure_template" | "emphasis_points" | "layout_format" | "visual_mode"
+    >
+  >;
+}
+
+export interface StyleRecommendMatch {
+  style_id: string;
+  reason: string;
+  confidence?: number | null;
+}
+
+export interface StyleRecommendResponse {
+  style_id?: string | null;
+  reason: string;
+  confidence?: number | null;
+  candidates?: StyleRecommendMatch[];
+}
+
+export interface StylePreviewPayload {
+  input_text: string;
+  target: StylePromptTarget;
+  llm: LLMConfig;
+  style_ids?: string[];
+  max_items?: number;
+  styles: Array<
+    Pick<
+      StyleTemplate,
+      "id" | "name" | "prompt" | "audience" | "tone" | "structure_template" | "emphasis_points" | "layout_format" | "visual_mode"
+    >
+  >;
+}
+
+export interface StylePreviewItem {
+  style_id: string;
+  preview_text: string;
+  focus_points: string[];
+}
+
+export interface StylePreviewResponse {
+  previews: StylePreviewItem[];
+}

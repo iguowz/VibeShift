@@ -6,7 +6,12 @@ export interface StyleRecommendation {
   score: number;
 }
 
-interface RecommendParams {
+export interface StyleRecommendationCandidate extends StyleRecommendation {
+  name: string;
+  signals: string[];
+}
+
+export interface RecommendParams {
   input: string;
   mode: DetectedMode;
   styles: StyleTemplate[];
@@ -102,7 +107,7 @@ const STYLE_HINTS: Record<string, StyleHintProfile> = {
   },
   snack: {
     keywords: ["快餐", "速读", "速览", "一分钟", "碎片", "短内容", "重点速看"],
-    boosts: ["用户更像要快速扫读版本"],
+    boosts: ["用户更像要快速扫读/速读版本"],
   },
   newspaper: {
     keywords: ["新闻", "专栏", "报道", "头版", "特稿", "述评"],
@@ -179,9 +184,9 @@ function scoreRecentPreference(style: StyleTemplate, recentRuns: RecentRunEntry[
   }, 0);
 }
 
-export function recommendStyle(params: RecommendParams): StyleRecommendation | null {
+export function recommendStyleCandidates(params: RecommendParams, limit = 4): StyleRecommendationCandidate[] {
   const cleanedInput = params.input.trim();
-  if (!cleanedInput || !params.styles.length) return null;
+  if (!cleanedInput || !params.styles.length) return [];
 
   const tokens = tokenize(cleanedInput);
   const lowerInput = cleanedInput.toLowerCase();
@@ -199,6 +204,15 @@ export function recommendStyle(params: RecommendParams): StyleRecommendation | n
   const letterIntent = /公开信|书信|写给|致读者|致你|一封信/.test(cleanedInput);
   const podcastIntent = /播客|口播|串词|主持稿|节目稿|朗读/.test(cleanedInput);
   const debateIntent = /辩论|正方|反方|立论|驳论|该不该|值不值得/.test(cleanedInput);
+  const scienceIntent = /科普|原理|误区|讲明白|为什么|怎么回事|解释一下|常见问题/.test(cleanedInput);
+  const kidsIntent = /中学生|初学者|入门|启蒙|小白|儿童友好|讲给孩子/.test(cleanedInput);
+  const plainIntent = /通俗|大白话|简单说|易懂|别太复杂|口语化|讲人话/.test(cleanedInput);
+  const playfulIntent = /幽默|欢乐|轻松|有趣|可爱|童趣|分享欲|轻快/.test(cleanedInput);
+  const snackIntent = /快餐|速读|速览|一分钟|碎片|重点速看|短内容/.test(cleanedInput);
+  const elegantIntent = /文雅|雅致|高级感|典雅|修辞|余味|书卷气/.test(cleanedInput);
+  const newspaperIntent = /报纸|专栏|新闻|头版|特稿|报道|述评/.test(cleanedInput);
+  const posterIntent = /海报|长图|封面|卡片|重点卡|标语|社媒/.test(cleanedInput);
+  const bookIntent = /章节|长文|书籍|系统梳理|完整讲清|深度阅读/.test(cleanedInput);
 
   const ranked = params.styles
     .map((style) => {
@@ -228,6 +242,10 @@ export function recommendStyle(params: RecommendParams): StyleRecommendation | n
         if (style.id === "science" && isQuestion) {
           score += 14;
           matchedSignals.push("提问式内容更适合科普解读");
+        }
+        if (style.id === "briefing" && (briefingIntent || isTechnical)) {
+          score += 12;
+          matchedSignals.push("调研目标偏决策或选型，适合先给简报式结论");
         }
         if (style.id === "newspaper") score += 4;
       } else {
@@ -275,11 +293,55 @@ export function recommendStyle(params: RecommendParams): StyleRecommendation | n
           score += 14;
           matchedSignals.push("输入里有明显观点表达诉求");
         }
+        if (style.id === "science" && scienceIntent) {
+          score += 16;
+          matchedSignals.push("内容更适合按原理、误区和解释链路展开");
+        }
+        if (style.id === "kids" && kidsIntent) {
+          score += 18;
+          matchedSignals.push("目标读者更像初学者或中学生，需要低门槛表达");
+        }
+        if (style.id === "plain" && plainIntent) {
+          score += 18;
+          matchedSignals.push("输入明确偏好通俗直白表达");
+        }
+        if ((style.id === "humor" || style.id === "cheerful" || style.id === "childish") && playfulIntent) {
+          score += 14;
+          matchedSignals.push("输入希望更轻快、有分享感或更活泼");
+        }
+        if (style.id === "snack" && snackIntent) {
+          score += 18;
+          matchedSignals.push("内容更像要做手机快扫版");
+        }
+        if (style.id === "elegant" && elegantIntent) {
+          score += 16;
+          matchedSignals.push("输入更偏好文雅、修辞感强的表达");
+        }
+        if (style.id === "newspaper" && newspaperIntent) {
+          score += 16;
+          matchedSignals.push("内容更适合新闻特稿式导语和分栏分析");
+        }
+        if (style.id === "poster" && posterIntent) {
+          score += 18;
+          matchedSignals.push("内容更适合海报/长图式重点卡片展示");
+        }
+        if (style.id === "book" && bookIntent) {
+          score += 14;
+          matchedSignals.push("内容需要更从容完整的章节式长阅读结构");
+        }
       }
 
       if (socialIntent && (style.id === "poster" || style.id === "snack" || style.id === "cheerful")) {
         score += 16;
         matchedSignals.push("存在明显社媒传播诉求");
+      }
+
+      if (posterIntent && style.id === "poster") {
+        score += 10;
+      }
+
+      if (bookIntent && style.id === "book") {
+        score += 8;
       }
 
       if (longForm && (style.id === "book" || style.id === "paper")) {
@@ -313,10 +375,25 @@ export function recommendStyle(params: RecommendParams): StyleRecommendation | n
     .sort((left, right) => right.score - left.score);
 
   const winner = ranked[0];
-  if (!winner || winner.score <= 0) return null;
+  if (!winner || winner.score <= 0) return [];
+
+  return ranked
+    .slice(0, Math.max(1, limit))
+    .map((item) => ({
+      styleId: item.styleId,
+      name: item.name,
+      score: item.score,
+      signals: item.matchedSignals,
+      reason: item.matchedSignals[0] || `已根据内容特征匹配到更合适的「${item.name}」风格`,
+    }));
+}
+
+export function recommendStyle(params: RecommendParams): StyleRecommendation | null {
+  const winner = recommendStyleCandidates(params, 1)[0];
+  if (!winner) return null;
   return {
     styleId: winner.styleId,
     score: winner.score,
-    reason: winner.matchedSignals[0] || `已根据内容特征匹配到更合适的「${winner.name}」风格`,
+    reason: winner.reason,
   };
 }

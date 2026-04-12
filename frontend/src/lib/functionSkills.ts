@@ -77,27 +77,42 @@ function deriveStyleBehavior(styleProfile?: StyleSkillProfile | null): StyleBeha
   const layout = styleProfile.layout_format || "auto";
   const isPoetry = layout === "poetry" || /诗|抒情|意象|留白/.test(fingerprint);
   const isClassical = layout === "classical" || /古文|古籍|书卷|题解|纲目|按语|章回/.test(fingerprint);
-  const isRiddle = /猜谜|悬念|谜面|揭晓|线索/.test(fingerprint);
-  const isStory = /故事|叙事|场景|冲突|转折/.test(fingerprint);
-  const isPpt = layout === "ppt" || /ppt|汇报|投屏|一屏一重点|行动项/.test(fingerprint);
-  const isPaper = layout === "paper" || /论文|综述|摘要|研究|讨论|结论边界/.test(fingerprint);
-  const isPoster = layout === "poster" || /海报|长图|卡片|标语|重点卡/.test(fingerprint);
-  const isBook = layout === "book" || /书籍|章节|长阅读|节中摘要/.test(fingerprint);
   const isInterview = /访谈|对谈|问答|q&a|qa|采访/.test(fingerprint);
-  const isSpeech = /演讲|发言|致辞|答辩|开场|收束号召/.test(fingerprint);
   const isPodcast = /播客|口播|主持|节目|串词/.test(fingerprint);
   const isLetter = /书信|来信|致读者|写给|致你|尺牍/.test(fingerprint);
   const isDebate = /辩论|正方|反方|攻防|交锋|驳论/.test(fingerprint);
   const isDocumentary = /纪实|纪录|现场|口述|非虚构|人物群像/.test(fingerprint);
+  const isSpeech = /演讲|发言|致辞|答辩|开场|收束号召/.test(fingerprint);
   const isEditorial = /评论|社论|时评|立场|述评|观点/.test(fingerprint);
+  const isRiddle = /猜谜|悬念|谜面|揭晓|线索/.test(fingerprint);
+  const isStory = /故事|叙事|场景|冲突|转折/.test(fingerprint);
   const isManual = /教程|手册|指南|步骤|实操|排错|前置条件/.test(fingerprint);
   const isBriefing = /简报|决策|高管|周报|月报|一页纸|brief/.test(fingerprint);
+  const isScience = /科普|原理|误区|讲明白|怎么回事|常见问题/.test(fingerprint);
+  const isKids = /中学生|初学者|入门|启蒙|小白|儿童友好/.test(fingerprint);
+  const isPlain = /通俗|大白话|易懂|口语化|别太复杂/.test(fingerprint);
+  const isPlayful = /幽默|欢乐|轻松|有趣|可爱|童趣|分享欲/.test(fingerprint);
+  const isSnack = /快餐|速读|碎片|一分钟|重点速看/.test(fingerprint);
+  const isElegant = /文雅|雅致|修辞|余味|书卷气/.test(fingerprint);
+  const isNewspaper = layout === "newspaper" || /报纸|专栏|新闻|头版|特稿/.test(fingerprint);
+  const isPpt = layout === "ppt" || /ppt|汇报|投屏|一屏一重点|行动项/.test(fingerprint);
+  const isPaper = layout === "paper" || /论文|综述|摘要|研究|讨论|结论边界/.test(fingerprint);
+  const isPoster = layout === "poster" || /海报|长图|卡片|标语|重点卡/.test(fingerprint);
+  const isBook = layout === "book" || /书籍|章节|长阅读|节中摘要/.test(fingerprint);
 
   const suppressSummaryFirst = isPoetry || isClassical || isRiddle || isStory || isSpeech || isPodcast || isLetter || isInterview;
 
   let fidelityInstruction: string | null = null;
   if (isPoetry) {
     fidelityInstruction = "优先保留诗歌分行、停顿、意象和回响式收束；不要强行改成 TL;DR、报告体或密集 bullet。";
+  } else if (isPodcast) {
+    fidelityInstruction = "保持口播节奏、自然转场和陪伴感表达，句子应适合直接朗读，不要突然切成硬邦邦 bullet。";
+  } else if (isInterview) {
+    fidelityInstruction = "保持问答或对谈结构，用问题驱动展开，必要时保留追问与回应，不要改写成普通报告。";
+  } else if (isLetter) {
+    fidelityInstruction = "保持称呼、缘起、展开和收束的书信结构，让对象感贯穿全文，不要改成公告或报告。";
+  } else if (isSpeech) {
+    fidelityInstruction = "保持演讲稿的开场定调、论点推进和收束号召，句子要适合朗读，不要写成书面长文。";
   } else if (isClassical) {
     fidelityInstruction = "优先保留题解、纲目、按语和书卷节奏；语言可以雅致，但仍需可读，不要硬塞现代报告式 TL;DR。";
   } else if (isRiddle) {
@@ -112,14 +127,6 @@ function deriveStyleBehavior(styleProfile?: StyleSkillProfile | null): StyleBeha
     fidelityInstruction = "保持海报/长图式短信息块排版，优先一句话结论、重点数字和强视觉层次，避免长段说明。";
   } else if (isBook) {
     fidelityInstruction = "保持章节式长阅读节奏，段间过渡自然，可在小节前后加摘要或总结，不要过度碎片化。";
-  } else if (isInterview) {
-    fidelityInstruction = "保持问答或对谈结构，用问题驱动展开，必要时保留追问与回应，不要改写成普通报告。";
-  } else if (isSpeech) {
-    fidelityInstruction = "保持演讲稿的开场定调、论点推进和收束号召，句子要适合朗读，不要写成书面长文。";
-  } else if (isPodcast) {
-    fidelityInstruction = "保持口播节奏、自然转场和陪伴感表达，句子应适合直接朗读，不要突然切成硬邦邦 bullet。";
-  } else if (isLetter) {
-    fidelityInstruction = "保持称呼、缘起、展开和收束的书信结构，让对象感贯穿全文，不要改成公告或报告。";
   } else if (isDebate) {
     fidelityInstruction = "保持主张、论点攻防、反方回应和结论收束的辩论结构，观点要鲜明但论据也要站得住。";
   } else if (isDocumentary) {
@@ -130,6 +137,20 @@ function deriveStyleBehavior(styleProfile?: StyleSkillProfile | null): StyleBeha
     fidelityInstruction = "保持目标、前置条件、步骤、排错和总结的教程/手册结构，优先让读者能照着操作。";
   } else if (isBriefing) {
     fidelityInstruction = "保持一句话结论、关键数据、风险与决策建议的简报结构，优先服务决策而不是铺陈细节。";
+  } else if (isScience) {
+    fidelityInstruction = "保持一句话概括、原理解释、误区提醒和现实意义的科普结构，优先把概念讲明白。";
+  } else if (isKids) {
+    fidelityInstruction = "保持低门槛、类比化、面向初学者的解释节奏，句子简短，但不要牺牲准确性。";
+  } else if (isPlain) {
+    fidelityInstruction = "保持直接、易懂、先结论后解释的表达，尽量把术语翻成日常说法，不要绕弯。";
+  } else if (isPlayful) {
+    fidelityInstruction = "保持轻快、好读和有记忆点的节奏，但不能为了有趣而夸张事实或牺牲信息密度。";
+  } else if (isSnack) {
+    fidelityInstruction = "保持一句话结论、重点条目和快速扫读节奏，删掉铺垫和多余解释。";
+  } else if (isElegant) {
+    fidelityInstruction = "保持起笔铺垫、层层展开和余味收束的文雅结构，修辞要服务内容，不要故作艰深。";
+  } else if (isNewspaper) {
+    fidelityInstruction = "保持导语、核心事实、分栏分析和结语的特稿结构，标题与小标题要短促有力。";
   }
 
   return {

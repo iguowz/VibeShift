@@ -40,6 +40,8 @@ uvicorn app.main:app --reload --port 8000
 - `style_profile` 现在还支持携带自动整理的 `function_skills`，把重点先行、多源整合、长文改写、证据优先、可视化表达、插图规划、分享导出等能力打包成稳定的 skill 结构，便于大模型直接消费。
 - `style_profile` 现在也支持更细的 `layout_format` 与 `visual_mode`，包括 `newspaper / poster / book / classical / ppt / paper / poetry`，便于前端把版式和可视化偏好稳定传入后端。
 - `/api/style-prompts/optimize` 现在除了返回 `optimized_prompt`，还会返回结构化 `profile_suggestion`，便于前端把优化结果直接编译回风格技能字段。
+- `/api/style-prompts/optimize` 的兜底逻辑也改成按风格族补齐“生成流程 / 推荐结构 / 结果展示形式”，即使模型优化接口失败，也不会退回单一通用模板。
+- `/api/style-prompts/recommend` 支持让前端把当前输入和候选风格发给大模型做自动匹配，失败时前端再回退本地启发式推荐。
 - `/api/style-prompts/optimize` 也支持接收 `current_profile` 与 `memory_hints`，可让前端把当前风格、已接受的历史风格记忆，以及从近期成功 run 反推出来的风格线索一起提供给优化器，形成轻量 procedural memory。
 - 前端近期任务记忆现在还会记录质量分、恢复次数和显式收藏状态，用这些信号给 `memory_hints` 排序，避免把低价值历史任务和高质量样本等权对待。
 

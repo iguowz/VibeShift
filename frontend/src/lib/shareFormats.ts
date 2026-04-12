@@ -1,7 +1,46 @@
-import { renderRichTextToHtml, stripLeadingRichTitle } from "./markdown";
-import type { DiscoverResponse, RecentRunEntry, SearchSource, TransformResponse } from "../types";
+import { stripLeadingRichTitle } from "./markdown";
+import { renderStyleBodyHtml } from "./styleBodyRender";
+import { classifyStyleProfile, type StyleFamily } from "./stylePresentation";
+import { getSummaryRenderMode } from "./styleSummary";
+import type { DiscoverResponse, RecentRunEntry, SearchSource, StyleSkillProfile, TransformResponse } from "../types";
 
 export type ShareTarget = "xiaohongshu" | "moments" | "wechat" | "zhihu";
+export type DiscoverExportView = "brief" | "report";
+export type PreferredDeliverableView = "transform" | DiscoverExportView;
+
+export const SHARE_TARGET_META: Record<
+  ShareTarget,
+  { channel: string; deliverable: string; action: string; copied: string; description: string }
+> = {
+  xiaohongshu: {
+    channel: "小红书",
+    deliverable: "小红书笔记",
+    action: "复制小红书成稿",
+    copied: "已复制小红书成稿",
+    description: "适合重点前置、节奏更快的图文发布",
+  },
+  moments: {
+    channel: "朋友圈",
+    deliverable: "朋友圈短文",
+    action: "复制朋友圈短文",
+    copied: "已复制朋友圈短文",
+    description: "适合短内容转发和一句话带重点",
+  },
+  wechat: {
+    channel: "公众号",
+    deliverable: "公众号长文",
+    action: "复制公众号长文",
+    copied: "已复制公众号长文",
+    description: "适合完整表达和直接对外发送",
+  },
+  zhihu: {
+    channel: "知乎",
+    deliverable: "知乎回答",
+    action: "复制知乎回答",
+    copied: "已复制知乎回答",
+    description: "适合展开解释、问答和观点阐述",
+  },
+};
 
 function normalizeWhitespace(value: string) {
   return String(value || "").replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
@@ -13,6 +52,20 @@ function bulletize(items: string[], limit = 4) {
     .filter(Boolean)
     .slice(0, limit)
     .map((item) => `- ${item}`);
+}
+
+function bulletizeForTarget(items: string[], target: ShareTarget, limit = 4) {
+  const normalized = items
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .slice(0, limit);
+  if (target === "xiaohongshu") {
+    return normalized.map((item, index) => `${index + 1}. ${item}`);
+  }
+  if (target === "moments") {
+    return normalized.map((item) => `• ${item}`);
+  }
+  return normalized.map((item) => `- ${item}`);
 }
 
 function topSources(sources: SearchSource[], limit = 4) {
@@ -33,6 +86,418 @@ function normalizeResultText(value: string) {
   return normalizeWhitespace(stripLeadingRichTitle(value));
 }
 
+function normalizeExcerptText(value: string) {
+  const metadataPattern = /^(title|url|hostname|description|sitename|date|tags|author|published|language|category)\s*:/i;
+  return normalizeWhitespace(
+    String(value || "")
+      .replace(/\r\n/g, "\n")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line && line !== "---" && !metadataPattern.test(line) && !/^https?:\/\//i.test(line))
+      .join("\n"),
+  );
+}
+
+function splitParagraphs(value: string) {
+  return normalizeWhitespace(value)
+    .split(/\n{2,}/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function buildHeading(title: string, target: ShareTarget) {
+  if (target === "xiaohongshu") return `【${title}】`;
+  return target === "moments" ? title : `# ${title}`;
+}
+
+export function getShareTargetMeta(target: ShareTarget) {
+  return SHARE_TARGET_META[target];
+}
+
+export function getRecommendedShareTarget(
+  family: StyleFamily,
+  view: PreferredDeliverableView = "transform",
+): ShareTarget {
+  if (view === "brief") {
+    if (family === "poster" || family === "snack") return "xiaohongshu";
+    if (family === "interview" || family === "podcast") return "zhihu";
+    return "wechat";
+  }
+
+  if (family === "poster" || family === "snack") return "xiaohongshu";
+  if (family === "interview" || family === "podcast" || family === "editorial" || family === "newspaper") {
+    return "zhihu";
+  }
+  return "wechat";
+}
+
+function extractListItems(value: string, limit = 4) {
+  return String(value || "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .map((line) => line.match(/^([-*+]\s+|\d+\.\s+)(.+)$/)?.[2]?.trim() || "")
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+function extractDialogueLines(value: string, limit = 4) {
+  return String(value || "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /^(问|答|Q|A|主持人|嘉宾|采访者|受访者|提问者|回答者)\s*[：:]/i.test(line))
+    .slice(0, limit);
+}
+
+function extractLeadingParagraphs(value: string, limit = 2) {
+  return splitParagraphs(value)
+    .filter((item) => item.length >= 12)
+    .slice(0, limit);
+}
+
+function dedupeLeadingParagraph(lead: string, body: string) {
+  const normalizedLead = normalizeWhitespace(lead);
+  const paragraphs = splitParagraphs(body);
+  if (!normalizedLead || !paragraphs.length) return body;
+  if (normalizeWhitespace(paragraphs[0]) !== normalizedLead) return body;
+  return normalizeWhitespace(paragraphs.slice(1).join("\n\n"));
+}
+
+function extractLetterAddressee(title: string, body: string) {
+  const titleMatch = String(title || "").match(/写给(.+?)(?:的)?一封信/);
+  if (titleMatch?.[1]) return `${titleMatch[1]}：`;
+  const firstParagraph = splitParagraphs(body)[0] || "";
+  if (/^[^\n]{1,20}[：:]$/.test(firstParagraph)) return firstParagraph;
+  return "你好：";
+}
+
+function buildSpeechSceneText(title: string, body: string, target: ShareTarget, conclusion: string, findings: string[]) {
+  const heading = buildHeading(title, target);
+  const paragraphs = splitParagraphs(body);
+  const opening = paragraphs[0] || normalizeWhitespace(conclusion);
+  const middle = target === "moments" ? paragraphs.slice(1, 2) : paragraphs.slice(1);
+  const takeawaySource =
+    findings.length
+      ? findings
+      : middle
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
+          .slice(0, target === "moments" ? 2 : 3);
+  const takeawayLines = bulletizeForTarget(takeawaySource, target, target === "moments" ? 2 : 3);
+  const actionLine = findings[0] ? `最后，请大家先把这件事记住：${findings[0]}` : "";
+  const opener = target === "xiaohongshu" ? `先把结论说在前面：${opening}` : opening;
+  return normalizeWhitespace(
+    [heading, "", opener, "", ...takeawayLines, ...(middle.length ? ["", ...middle] : []), ...(actionLine ? ["", actionLine] : [])].join("\n"),
+  );
+}
+
+function buildLetterSceneText(title: string, body: string, target: ShareTarget, conclusion: string, findings: string[]) {
+  const heading = buildHeading(title, target);
+  const cleanBody = normalizeWhitespace(body);
+  if (cleanBody && /[：:]\s*$/.test(splitParagraphs(cleanBody)[0] || "")) {
+    return normalizeWhitespace([heading, "", cleanBody].join("\n"));
+  }
+  const addressee = extractLetterAddressee(title, cleanBody);
+  const bodyParagraphs = [
+    conclusion || extractLeadingParagraphs(cleanBody, 1)[0] || "",
+    ...findings.slice(0, target === "moments" ? 2 : 3),
+  ].filter(Boolean);
+  const opener = target === "xiaohongshu" ? `${addressee}\n\n今天想认真说一件事。` : addressee;
+  return normalizeWhitespace([heading, "", opener, "", ...bodyParagraphs, "", target === "moments" ? "祝一切顺利" : "祝好"].join("\n"));
+}
+
+function buildBriefingSceneText(title: string, target: ShareTarget, conclusion: string, findings: string[], uncertainties: string[], body: string) {
+  const heading = buildHeading(title, target);
+  const conciseBullets = bulletizeForTarget([...findings, ...uncertainties.map((item) => `风险：${item}`)], target, target === "moments" ? 3 : 5);
+  const fallback = bulletizeForTarget(extractListItems(body, target === "moments" ? 3 : 5), target, target === "moments" ? 3 : 5);
+  const leadLine =
+    target === "xiaohongshu"
+      ? `一句话结论：${conclusion || extractLeadingParagraphs(body, 1)[0] || ""}`
+      : conclusion || extractLeadingParagraphs(body, 1)[0] || "";
+  const lines = [heading, "", leadLine, "", ...(conciseBullets.length ? conciseBullets : fallback)];
+  return normalizeWhitespace(lines.join("\n"));
+}
+
+function buildEditorialSceneText(
+  title: string,
+  target: ShareTarget,
+  body: string,
+  conclusion: string,
+  findings: string[],
+  sources: SearchSource[] | Array<{ title: string; url: string; overall_score?: number }>,
+) {
+  const heading = buildHeading(title, target);
+  const cleanBody = dedupeLeadingParagraph(conclusion, body);
+  const fallbackPivot = extractLeadingParagraphs(cleanBody, 2)[0] || "";
+  const pivot = findings[0] ? `更值得继续追问的是：${findings[0]}` : fallbackPivot ? `更值得继续追问的是：${fallbackPivot}` : "";
+  const sourceLines = renderSourceLines(
+    (sources as SearchSource[]).map((item, index) => ({
+      id: index + 1,
+      title: item.title,
+      url: item.url,
+      snippet: "",
+      excerpt: "",
+      overall_score: (item as SearchSource).overall_score,
+    })),
+    target === "moments" ? 2 : 4,
+  );
+  return normalizeWhitespace(
+    [
+      heading,
+      "",
+      ...(conclusion ? [target === "xiaohongshu" ? `核心判断：${conclusion}` : conclusion, ""] : []),
+      cleanBody,
+      ...(pivot ? ["", target === "moments" ? pivot.replace("更值得继续追问的是：", "继续看：") : pivot] : []),
+      ...(target === "zhihu" && sourceLines.length ? ["", "参考来源", ...sourceLines] : []),
+    ].join("\n"),
+  );
+}
+
+function buildShareBodyByFamily(params: {
+  title: string;
+  body: string;
+  target: ShareTarget;
+  family: StyleFamily;
+  excerpt?: string;
+  conclusion?: string;
+  findings?: string[];
+  sources?: SearchSource[] | Array<{ title: string; url: string; overall_score?: number }>;
+}) {
+  const { title, body, target, family, excerpt = "", conclusion = "", findings = [], sources = [] } = params;
+  const heading = buildHeading(title, target);
+  const cleanBody = normalizeWhitespace(body);
+  const lead = normalizeWhitespace(conclusion || excerpt);
+  const bullets = bulletize(findings.length ? findings : extractListItems(cleanBody, 4), 4);
+  const dialogues = extractDialogueLines(cleanBody, target === "moments" ? 3 : 5);
+  const leadParagraphs = extractLeadingParagraphs(cleanBody, target === "moments" ? 2 : 3);
+  const sourceLines = renderSourceLines(
+    (sources as SearchSource[]).map((item, index) => ({
+      id: index + 1,
+      title: item.title,
+      url: item.url,
+      snippet: "",
+      excerpt: "",
+      overall_score: (item as SearchSource).overall_score,
+    })),
+    target === "moments" ? 2 : 4,
+  );
+
+  switch (family) {
+    case "interview":
+      return normalizeWhitespace([heading, "", ...dialogues, ...(dialogues.length ? [] : leadParagraphs)].join("\n"));
+    case "podcast":
+      return normalizeWhitespace([heading, "", cleanBody].join("\n"));
+    case "letter":
+      return buildLetterSceneText(title, cleanBody, target, lead, findings);
+    case "speech":
+      return buildSpeechSceneText(title, cleanBody, target, lead, findings);
+    case "poetry":
+    case "classical":
+    case "elegant":
+    case "story":
+    case "documentary":
+    case "book":
+      return normalizeWhitespace([heading, "", cleanBody].join("\n"));
+    case "briefing":
+    case "decision":
+    case "poster":
+    case "snack":
+      return buildBriefingSceneText(title, target, lead, findings, [], cleanBody);
+    case "manual":
+    case "science":
+    case "kids":
+    case "plain":
+      return normalizeWhitespace(
+        [
+          heading,
+          "",
+          ...(lead ? [lead, ""] : []),
+          ...(bullets.length ? bullets : leadParagraphs),
+          ...(target === "wechat" || target === "zhihu" ? ["", cleanBody] : []),
+        ].join("\n"),
+      );
+    case "editorial":
+    case "newspaper":
+    case "paper":
+      return buildEditorialSceneText(title, target, cleanBody, lead, findings, sources);
+    default:
+      return normalizeWhitespace(
+        [
+          heading,
+          "",
+          ...(lead ? [lead, ""] : []),
+          cleanBody,
+          ...(target === "zhihu" && sourceLines.length ? ["", "参考来源", ...sourceLines] : []),
+        ].join("\n"),
+      );
+  }
+}
+
+function renderStyledPrintableHtml(content: string, family: StyleFamily) {
+  return renderStyleBodyHtml(content, getSummaryRenderMode(family), family);
+}
+
+function buildDiscoverBriefDirectText(
+  result: DiscoverResponse,
+  family: StyleFamily,
+  target: ShareTarget = "wechat",
+) {
+  const heading = buildHeading(result.title, target);
+  const conclusion = normalizeWhitespace(result.brief.conclusion || result.brief.summary || result.title);
+  const findings = bulletize(result.brief.key_findings, target === "moments" ? 3 : 4);
+  const uncertainties = bulletize(
+    result.brief.uncertainties.map((item) => `风险：${item}`),
+    target === "moments" ? 1 : 2,
+  );
+  const outline = bulletize(result.brief.draft_outline, target === "moments" ? 2 : 3);
+
+  switch (family) {
+    case "interview":
+    case "podcast":
+      return normalizeWhitespace(
+        [
+          heading,
+          "",
+          "问：这次最值得先拿走的结论是什么？",
+          `答：${conclusion}`,
+          ...result.brief.key_findings.slice(0, target === "moments" ? 2 : 3).flatMap((item) => [
+            "问：还要继续关注什么？",
+            `答：${item}`,
+          ]),
+        ].join("\n"),
+      );
+    case "speech":
+      return normalizeWhitespace(
+        [
+          heading,
+          "",
+          `各位好，先说结论：${conclusion}`,
+          "",
+          ...result.brief.key_findings.slice(0, target === "moments" ? 2 : 3),
+          ...(result.brief.uncertainties.length ? ["", `最后，请继续关注：${result.brief.uncertainties[0]}`] : []),
+        ].join("\n"),
+      );
+    case "letter":
+      return normalizeWhitespace(
+        [
+          heading,
+          "",
+          extractLetterAddressee(result.title, result.transformed_text),
+          "",
+          conclusion,
+          "",
+          ...result.brief.key_findings.slice(0, target === "moments" ? 2 : 3),
+          "",
+          "祝好",
+        ].join("\n"),
+      );
+    case "briefing":
+    case "decision":
+    case "poster":
+    case "snack":
+      return buildBriefingSceneText(result.title, target, conclusion, result.brief.key_findings, result.brief.uncertainties, result.transformed_text);
+    case "editorial":
+    case "newspaper":
+    case "paper":
+      return buildEditorialSceneText(
+        result.title,
+        target,
+        normalizeResultText(result.transformed_text),
+        conclusion,
+        result.brief.key_findings,
+        result.sources,
+      );
+    case "manual":
+    case "science":
+    case "kids":
+    case "plain":
+      return normalizeWhitespace(
+        [heading, "", conclusion, "", ...(outline.length ? outline : findings), ...uncertainties].join("\n"),
+      );
+    default:
+      return normalizeWhitespace([heading, "", conclusion, "", ...(findings.length ? findings : outline), ...uncertainties].join("\n"));
+  }
+}
+
+function buildHistoryBriefDirectText(
+  entry: RecentRunEntry,
+  family: StyleFamily,
+  target: ShareTarget = "wechat",
+) {
+  const heading = buildHeading(entry.title, target);
+  const conclusion = normalizeWhitespace(entry.brief_conclusion || entry.brief_summary || entry.summary || entry.title);
+  const findings = bulletize(entry.brief_key_findings || [], target === "moments" ? 3 : 4);
+
+  switch (family) {
+    case "interview":
+    case "podcast":
+      return normalizeWhitespace(
+        [
+          heading,
+          "",
+          "问：这次历史结果最值得先拿走的结论是什么？",
+          `答：${conclusion}`,
+          ...(entry.brief_key_findings || []).slice(0, target === "moments" ? 2 : 3).flatMap((item) => [
+            "问：还要继续关注什么？",
+            `答：${item}`,
+          ]),
+        ].join("\n"),
+      );
+    case "speech":
+      return normalizeWhitespace(
+        [
+          heading,
+          "",
+          `各位好，先说结论：${conclusion}`,
+          "",
+          ...(entry.brief_key_findings || []).slice(0, target === "moments" ? 2 : 3),
+        ].join("\n"),
+      );
+    case "letter":
+      return normalizeWhitespace(
+        [
+          heading,
+          "",
+          extractLetterAddressee(entry.title, entry.result_text),
+          "",
+          conclusion,
+          "",
+          ...(entry.brief_key_findings || []).slice(0, target === "moments" ? 2 : 3),
+          "",
+          "祝好",
+        ].join("\n"),
+      );
+    case "briefing":
+    case "decision":
+    case "poster":
+    case "snack":
+      return buildBriefingSceneText(entry.title, target, conclusion, entry.brief_key_findings || [], [], entry.result_text);
+    case "editorial":
+    case "newspaper":
+    case "paper":
+      return buildEditorialSceneText(
+        entry.title,
+        target,
+        normalizeResultText(entry.result_text),
+        conclusion,
+        entry.brief_key_findings || [],
+        (entry.source_preview || []).map((item) => ({
+          title: item.title,
+          url: item.url,
+          overall_score: item.relevance_score || 0,
+        })),
+      );
+    case "manual":
+    case "science":
+    case "kids":
+    case "plain":
+      return normalizeWhitespace([heading, "", conclusion, "", ...findings].join("\n"));
+    default:
+      return normalizeWhitespace([heading, "", conclusion, "", ...findings].join("\n"));
+  }
+}
+
 function escapeHtml(value: string) {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -40,6 +505,19 @@ function escapeHtml(value: string) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function sanitizePrintableClassName(value: string) {
+  return value.replace(/[^a-z0-9_-]/gi, "");
+}
+
+function filterPrintableClasses(value: string) {
+  return String(value || "")
+    .split(/\s+/)
+    .map((item) => item.trim())
+    .filter((item) => /^(body-|dialogue-render-|printable-)/.test(item))
+    .map(sanitizePrintableClassName)
+    .filter(Boolean);
 }
 
 const PRINTABLE_ALLOWED_ATTRIBUTES = new Set([
@@ -72,7 +550,6 @@ function normalizePrintableBodyHtml(html: string) {
     for (const attr of Array.from(element.attributes)) {
       const name = attr.name.toLowerCase();
       if (
-        name === "class" ||
         name === "style" ||
         name === "id" ||
         name === "hidden" ||
@@ -83,6 +560,15 @@ function normalizePrintableBodyHtml(html: string) {
         name.startsWith("on")
       ) {
         element.removeAttribute(attr.name);
+        continue;
+      }
+      if (name === "class") {
+        const allowedClasses = filterPrintableClasses(attr.value);
+        if (allowedClasses.length) {
+          element.setAttribute("class", allowedClasses.join(" "));
+        } else {
+          element.removeAttribute(attr.name);
+        }
         continue;
       }
       if (!PRINTABLE_ALLOWED_ATTRIBUTES.has(name)) {
@@ -102,8 +588,9 @@ function normalizePrintableBodyHtml(html: string) {
   return root.innerHTML.trim();
 }
 
-function buildPrintableHtml(title: string, html: string) {
+function buildPrintableHtml(title: string, html: string, family: StyleFamily) {
   const printableBody = normalizePrintableBodyHtml(html);
+  const familyClass = sanitizePrintableClassName(`printable-family-${family}`);
   return `<!doctype html>
   <html>
     <head>
@@ -162,13 +649,74 @@ function buildPrintableHtml(title: string, html: string) {
         .print-shell { padding-top: 12px; }
         .print-title { margin-top: 0; margin-bottom: 1rem; }
         .print-shell > :first-child { margin-top: 0; }
+        .body-card-module,
+        .body-step-module,
+        .body-section-module,
+        .body-lead-block,
+        .body-bridge-block,
+        .body-closing-block,
+        .dialogue-render-item {
+          margin: 0.85rem 0;
+          padding: 0.85rem 0.95rem;
+          border: 1px solid #dbe3f1;
+          border-radius: 14px;
+          background: #f8fbff;
+        }
+        .body-card-grid,
+        .body-step-list,
+        .body-section-body,
+        .dialogue-render-block { display: grid; gap: 0.65rem; }
+        .body-card-item,
+        .body-step-item {
+          padding: 0.7rem 0.8rem;
+          border-radius: 12px;
+          background: #ffffff;
+          border: 1px solid #e5edf9;
+        }
+        .body-step-item { display: grid; grid-template-columns: auto 1fr; gap: 0.7rem; align-items: start; }
+        .body-step-index {
+          width: 1.5rem; height: 1.5rem; border-radius: 999px; display: inline-grid; place-items: center;
+          background: #dbeafe; color: #1d4ed8; font-weight: 700; font-size: 12px;
+        }
+        .body-module-head strong,
+        .body-section-head strong,
+        .body-lead-head strong,
+        .body-bridge-head strong,
+        .body-closing-head strong,
+        .dialogue-render-speaker {
+          color: #1d4ed8;
+          font-weight: 700;
+        }
+        .body-section-preface {
+          margin: 0.6rem 0;
+          padding: 0.65rem 0.8rem;
+          border-left: 3px solid #93c5fd;
+          background: #f8fbff;
+          border-radius: 10px;
+        }
+        .body-letter-signature { margin-top: 0.7rem; text-align: right; font-weight: 700; letter-spacing: 0.08em; }
+        .body-poetry-stanza { margin: 1.1rem auto; max-width: 680px; }
+        .body-poetry-stanza p { text-align: center; line-height: 1.95; }
+        .printable-family-letter .print-shell,
+        .printable-family-book .print-shell,
+        .printable-family-classical .print-shell,
+        .printable-family-elegant .print-shell {
+          font-family: "Source Han Serif SC", "Noto Serif SC", Georgia, serif;
+        }
+        .printable-family-speech .body-opening-speech,
+        .printable-family-speech .body-closing-speech,
+        .printable-family-editorial .body-lead-editorial,
+        .printable-family-newspaper .body-lead-newspaper,
+        .printable-family-paper .body-lead-paper {
+          background: #eef4ff;
+        }
         @media print {
           body { max-width: none; padding: 0; }
           .print-toolbar { display: none; }
         }
       </style>
     </head>
-    <body>
+    <body class="${familyClass}">
       <div class="print-toolbar">
         <button type="button" data-print-button>打印 / 另存为 PDF</button>
         <p data-print-status>正在准备导出页面，请稍候…</p>
@@ -238,231 +786,129 @@ function writePrintableDocument(doc: Document, content: string) {
   doc.close();
 }
 
-function buildHistorySourceLines(entry: RecentRunEntry, limit = 4) {
-  return (entry.source_preview || [])
-    .slice(0, limit)
-    .map((item, index) => `${index + 1}. ${item.title}（${item.url}）`);
-}
-
-export function buildTransformShareText(result: TransformResponse, target: ShareTarget): string {
-  const body = normalizeWhitespace(result.transformed_text);
-  const excerpt = normalizeWhitespace(result.raw_excerpt);
-  if (target === "moments") {
-    return normalizeWhitespace([
-      `${result.title}`,
-      excerpt,
-      "",
-      "今天整理了一版内容，核心要点如下：",
-      ...bulletize(body.split("\n").filter((line) => line.trim().length >= 8), 3),
-    ].join("\n"));
-  }
-
-  if (target === "xiaohongshu") {
-    return normalizeWhitespace([
-      `# ${result.title}`,
-      "",
-      excerpt,
-      "",
-      "这次我重点整理了：",
-      ...bulletize(body.split("\n").filter((line) => line.trim().length >= 8), 4),
-      "",
-      "#内容创作 #效率工具 #信息整理",
-    ].join("\n"));
-  }
-
-  if (target === "wechat") {
-    return normalizeWhitespace([
-      `# ${result.title}`,
-      "",
-      `导语：${excerpt}`,
-      "",
-      body,
-    ].join("\n"));
-  }
-
-  return normalizeWhitespace([
-    `# ${result.title}`,
-    "",
-    excerpt ? `摘要：${excerpt}\n` : "",
+export function buildTransformShareText(
+  result: TransformResponse,
+  target: ShareTarget,
+  styleProfile?: StyleSkillProfile | null,
+): string {
+  const body = normalizeResultText(result.transformed_text);
+  const excerpt = normalizeExcerptText(result.raw_excerpt);
+  const family = classifyStyleProfile(styleProfile);
+  return buildShareBodyByFamily({
+    title: result.title,
     body,
-  ].join("\n"));
+    target,
+    family,
+    excerpt,
+  });
 }
 
-export function buildDiscoverShareText(result: DiscoverResponse, target: ShareTarget): string {
+export function buildDiscoverShareText(
+  result: DiscoverResponse,
+  target: ShareTarget,
+  styleProfile?: StyleSkillProfile | null,
+  activeTab: DiscoverExportView = "report",
+): string {
+  const family = classifyStyleProfile(styleProfile);
+  if (activeTab === "brief") {
+    return buildDiscoverBriefDirectText(result, family, target);
+  }
   const brief = result.brief;
-  const topFindings = bulletize(brief.key_findings, 4);
-  const sourceLines = renderSourceLines(result.sources, 4);
-  if (target === "moments") {
-    return normalizeWhitespace([
-      `${result.title}`,
-      brief.conclusion || brief.summary,
-      "",
-      ...topFindings.slice(0, 3),
-    ].join("\n"));
-  }
-
-  if (target === "xiaohongshu") {
-    return normalizeWhitespace([
-      `# ${result.title}`,
-      "",
-      `一句话结论：${brief.conclusion || brief.summary}`,
-      "",
-      "我最关心的几个点：",
-      ...topFindings,
-      "",
-      "优先看的公开来源：",
-      ...sourceLines,
-      "",
-      "#调研 #做决策 #信息整理",
-    ].join("\n"));
-  }
-
-  if (target === "wechat") {
-    return normalizeWhitespace([
-      `# ${result.title}`,
-      "",
-      `导语：${brief.summary || brief.conclusion}`,
-      "",
-      "## 直接结论",
-      brief.conclusion || "暂无",
-      "",
-      "## 关键发现",
-      ...topFindings,
-      "",
-      "## 参考来源",
-      ...sourceLines,
-      "",
-      "## 正文",
-      normalizeWhitespace(result.transformed_text),
-    ].join("\n"));
-  }
-
-  return normalizeWhitespace([
-    `# ${result.title}`,
-    "",
-    "## 直接结论",
-    brief.conclusion || "暂无",
-    "",
-    "## 关键发现",
-    ...topFindings,
-    "",
-    "## 参考来源",
-    ...sourceLines,
-    "",
-    normalizeWhitespace(result.transformed_text),
-  ].join("\n"));
+  return buildShareBodyByFamily({
+    title: result.title,
+    body: normalizeResultText(result.transformed_text),
+    target,
+    family,
+    excerpt: brief.summary,
+    conclusion: brief.conclusion,
+    findings: brief.key_findings,
+    sources: result.sources,
+  });
 }
 
-export function buildHistoryShareText(entry: RecentRunEntry, target: ShareTarget): string {
+export function buildHistoryShareText(
+  entry: RecentRunEntry,
+  target: ShareTarget,
+  activeTab: DiscoverExportView = "report",
+): string {
   const body = normalizeResultText(entry.result_text);
+  const family = classifyStyleProfile(entry.style_snapshot);
   if (entry.mode === "discover") {
-    const topFindings = bulletize(entry.brief_key_findings || [], 4);
-    const sourceLines = buildHistorySourceLines(entry, 4);
-    if (target === "moments") {
-      return normalizeWhitespace([
-        entry.title,
-        entry.brief_conclusion || entry.brief_summary || entry.summary,
-        "",
-        ...topFindings.slice(0, 3),
-      ].join("\n"));
+    if (activeTab === "brief") {
+      return buildHistoryBriefDirectText(entry, family, target);
     }
-
-    if (target === "xiaohongshu") {
-      return normalizeWhitespace([
-        `# ${entry.title}`,
-        "",
-        `一句话结论：${entry.brief_conclusion || entry.brief_summary || entry.summary}`,
-        "",
-        "我最想先分享的几个点：",
-        ...topFindings,
-        "",
-        "参考来源：",
-        ...sourceLines,
-        "",
-        "#调研 #资料整理 #内容输出",
-      ].join("\n"));
-    }
-
-    if (target === "wechat") {
-      return normalizeWhitespace([
-        `# ${entry.title}`,
-        "",
-        `导语：${entry.brief_summary || entry.brief_conclusion || entry.summary}`,
-        "",
-        "## 直接结论",
-        entry.brief_conclusion || entry.summary || "暂无",
-        "",
-        "## 关键发现",
-        ...topFindings,
-        "",
-        "## 参考来源",
-        ...sourceLines,
-        "",
-        "## 正文",
-        body,
-      ].join("\n"));
-    }
-
-    return normalizeWhitespace([
-      `# ${entry.title}`,
-      "",
-      "## 直接结论",
-      entry.brief_conclusion || entry.summary || "暂无",
-      "",
-      "## 关键发现",
-      ...topFindings,
-      "",
-      "## 参考来源",
-      ...sourceLines,
-      "",
+    return buildShareBodyByFamily({
+      title: entry.title,
       body,
-    ].join("\n"));
+      target,
+      family,
+      excerpt: entry.brief_summary || entry.summary,
+      conclusion: entry.brief_conclusion,
+      findings: entry.brief_key_findings || [],
+      sources: (entry.source_preview || []).map((item) => ({
+        title: item.title,
+        url: item.url,
+        overall_score: item.relevance_score || 0,
+      })),
+    });
   }
 
   const excerpt = normalizeWhitespace(entry.summary || entry.result_excerpt);
-  if (target === "moments") {
-    return normalizeWhitespace([
-      entry.title,
-      excerpt,
-      "",
-      "这次我整理出的重点：",
-      ...bulletize(body.split("\n").filter((line) => line.trim().length >= 8), 3),
-    ].join("\n"));
-  }
-
-  if (target === "xiaohongshu") {
-    return normalizeWhitespace([
-      `# ${entry.title}`,
-      "",
-      excerpt,
-      "",
-      "我会优先分享这几个点：",
-      ...bulletize(body.split("\n").filter((line) => line.trim().length >= 8), 4),
-      "",
-      "#内容整理 #创作助手 #效率工具",
-    ].join("\n"));
-  }
-
-  if (target === "wechat") {
-    return normalizeWhitespace([
-      `# ${entry.title}`,
-      "",
-      `导语：${excerpt}`,
-      "",
-      body,
-    ].join("\n"));
-  }
-
-  return normalizeWhitespace([
-    `# ${entry.title}`,
-    "",
-    excerpt ? `摘要：${excerpt}\n` : "",
+  return buildShareBodyByFamily({
+    title: entry.title,
     body,
-  ].join("\n"));
+    target,
+    family,
+    excerpt,
+  });
 }
 
-export function exportHtmlToPdf(title: string, html: string) {
-  const content = buildPrintableHtml(title, html);
+export function buildHistoryCopyText(entry: RecentRunEntry, activeTab: DiscoverExportView = "report") {
+  if (entry.mode !== "discover" || activeTab === "report") {
+    return entry.result_text;
+  }
+  return buildHistoryBriefDirectText(entry, classifyStyleProfile(entry.style_snapshot), "wechat");
+}
+
+export function buildPreferredTransformCopyText(
+  result: TransformResponse,
+  styleProfile?: StyleSkillProfile | null,
+) {
+  const family = classifyStyleProfile(styleProfile);
+  return buildTransformShareText(result, getRecommendedShareTarget(family, "transform"), styleProfile);
+}
+
+export function buildDiscoverCopyText(
+  result: DiscoverResponse,
+  styleProfile?: StyleSkillProfile | null,
+  activeTab: DiscoverExportView = "report",
+) {
+  const family = classifyStyleProfile(styleProfile);
+  if (activeTab === "report") {
+    return normalizeResultText(result.transformed_text);
+  }
+  return buildDiscoverBriefDirectText(result, family, "wechat");
+}
+
+export function buildPreferredDiscoverCopyText(
+  result: DiscoverResponse,
+  styleProfile?: StyleSkillProfile | null,
+  activeTab: DiscoverExportView = "report",
+) {
+  const family = classifyStyleProfile(styleProfile);
+  const target = getRecommendedShareTarget(family, activeTab);
+  return buildDiscoverShareText(result, target, styleProfile, activeTab);
+}
+
+export function buildPreferredHistoryCopyText(entry: RecentRunEntry, activeTab: DiscoverExportView = "report") {
+  const family = classifyStyleProfile(entry.style_snapshot);
+  const view: PreferredDeliverableView = entry.mode === "discover" ? activeTab : "transform";
+  const target = getRecommendedShareTarget(family, view);
+  return buildHistoryShareText(entry, target, activeTab);
+}
+
+export function exportHtmlToPdf(title: string, html: string, family: StyleFamily = "default") {
+  const content = buildPrintableHtml(title, html, family);
   const popup = window.open("", "_blank", "width=960,height=720");
   if (popup) {
     writePrintableDocument(popup.document, content);
@@ -496,14 +942,38 @@ export function exportHtmlToPdf(title: string, html: string) {
   }, 300_000);
 }
 
-export function exportTransformResultPdf(result: TransformResponse) {
+export function exportTransformResultPdf(result: TransformResponse, styleProfile?: StyleSkillProfile | null) {
   const title = result.title || "VibeShift 导出";
-  const html = renderRichTextToHtml(stripLeadingRichTitle(result.transformed_text));
-  exportHtmlToPdf(title, html);
+  const family = classifyStyleProfile(styleProfile);
+  const exportText = buildPreferredTransformCopyText(result, styleProfile);
+  const html = renderStyledPrintableHtml(stripLeadingRichTitle(exportText), family);
+  exportHtmlToPdf(title, html, family);
 }
 
-export function exportDiscoverResultPdf(result: DiscoverResponse) {
+export function exportDiscoverResultPdf(
+  result: DiscoverResponse,
+  styleProfile?: StyleSkillProfile | null,
+  activeTab: DiscoverExportView = "report",
+) {
   const title = result.title || "VibeShift 调研导出";
-  const html = renderRichTextToHtml(stripLeadingRichTitle(result.transformed_text));
-  exportHtmlToPdf(title, html);
+  const family = classifyStyleProfile(styleProfile);
+  const exportText =
+    activeTab === "brief"
+      ? buildDiscoverBriefDirectText(result, family, "wechat")
+      : normalizeResultText(result.transformed_text);
+  const html = renderStyledPrintableHtml(stripLeadingRichTitle(exportText), family);
+  exportHtmlToPdf(title, html, family);
+}
+
+export function exportHistoryResultPdf(entry: RecentRunEntry, activeTab: DiscoverExportView = "report") {
+  const title = entry.title || "VibeShift 历史结果";
+  const family = classifyStyleProfile(entry.style_snapshot);
+  const exportText =
+    entry.mode === "discover"
+      ? activeTab === "brief"
+        ? buildHistoryBriefDirectText(entry, family, "wechat")
+        : normalizeResultText(entry.result_text)
+      : buildPreferredHistoryCopyText(entry, activeTab);
+  const html = renderStyledPrintableHtml(normalizeResultText(exportText), family);
+  exportHtmlToPdf(title, html, family);
 }

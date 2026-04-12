@@ -157,4 +157,42 @@ describe("functionSkills", () => {
     expect(skills.map((item) => item.id)).not.toContain("summary_first");
     expect(skills.find((item) => item.id === "style_fidelity")?.instruction).toMatch(/口播|朗读|bullet/);
   });
+
+  it("keeps style fidelity for plain explanatory styles", () => {
+    const skills = buildFunctionSkills({
+      mode: "text",
+      input: "把这段算法解释讲人话一点，通俗易懂",
+      styleProfile: {
+        name: "通俗风",
+        audience: "",
+        tone: "直接、易懂、生活化",
+        structure_template: "先讲结论 -> 分点解释 -> 最后提醒",
+        emphasis_points: [],
+        citation_policy: "minimal",
+        title_policy: "rewrite",
+        image_focus: "auto",
+        layout_format: "auto",
+        visual_mode: "minimal",
+      },
+      imageConfig: {
+        enabled: false,
+        provider: null,
+        base_url: null,
+        api_key: null,
+        model: null,
+        count: 1,
+        style_preset: "",
+        custom_prompt: "",
+        placement: "header",
+        smart_mode: true,
+        smart_max_count: 3,
+        retry_on_failure: true,
+        retry_strategy: "simplify_prompt",
+        fallback_model: null,
+      },
+    });
+
+    expect(skills.map((item) => item.id)).toContain("style_fidelity");
+    expect(skills.find((item) => item.id === "style_fidelity")?.instruction).toMatch(/日常说法|易懂|结论/);
+  });
 });
